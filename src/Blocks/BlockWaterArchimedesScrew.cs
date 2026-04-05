@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -39,9 +38,9 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
         BlockWaterArchimedesScrew blockToPlace = this;
         if (IsDirectionalEndBlock())
         {
-            BlockFacing playerFacing = GetFacingAwayFromPlayer(byPlayer, blockSel.Position);
+            BlockFacing playerFacing = SuggestedHVOrientation(byPlayer, blockSel)[0].Opposite;
             string variant = GetPlacedVariantForFacing(playerFacing);
-            blockToPlace = api.World.GetBlock(CodeWithVariant("type", variant)) as BlockWaterArchimedesScrew
+            blockToPlace = ResolveDirectionalVariantBlock(variant)
                 ?? this;
             api.Logger.Notification(
                 "{0} Placement chose facing {1} and variant '{2}' for {3} at {4}",
@@ -116,11 +115,6 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
             failureCode
         );
         return false;
-    }
-
-    public override void OnNeighbourBlockChange(IWorldAccessor world, BlockPos pos, BlockPos neibpos)
-    {
-        base.OnNeighbourBlockChange(world, pos, neibpos);
     }
 
     public override void DidConnectAt(IWorldAccessor world, BlockPos pos, BlockFacing face)
@@ -203,8 +197,7 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
     private static bool IsWaterSourceBlock(Block block)
     {
         return block.IsLiquid() &&
-               string.Equals(block.Variant?["flow"], "still", StringComparison.Ordinal) &&
-               string.Equals(block.Variant?["height"], "7", StringComparison.Ordinal);
+               ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _);
     }
 
     private string GetPlacedVariantForFacing(BlockFacing facing)
@@ -217,20 +210,12 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
         return "ported-" + facing.Code;
     }
 
-    private static BlockFacing GetFacingAwayFromPlayer(IPlayer byPlayer, BlockPos targetPos)
+    private BlockWaterArchimedesScrew? ResolveDirectionalVariantBlock(string variant)
     {
-        if (byPlayer.Entity != null)
-        {
-            double dx = byPlayer.Entity.Pos.X - (targetPos.X + 0.5);
-            double dz = byPlayer.Entity.Pos.Z - (targetPos.Z + 0.5);
-            if (Math.Abs(dx) > 0.001 || Math.Abs(dz) > 0.001)
-            {
-                float angle = (float)Math.Atan2(dz, dx);
-                return BlockFacing.HorizontalFromAngle(angle).Opposite;
-            }
-        }
+        string path = IsOutletBlock()
+            ? $"{ArchimedesScrewModSystem.OutletBlockCode}-{variant}"
+            : $"{ArchimedesScrewModSystem.ScrewBlockCode}-{variant}";
 
-        float yaw = byPlayer.Entity?.Pos.Yaw ?? 0;
-        return BlockFacing.HorizontalFromYaw(yaw);
+        return api.World.GetBlock(new AssetLocation(ArchimedesScrewModSystem.ModId, path)) as BlockWaterArchimedesScrew;
     }
 }

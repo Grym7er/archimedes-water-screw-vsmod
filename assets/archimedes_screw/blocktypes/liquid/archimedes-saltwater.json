@@ -1,8 +1,8 @@
 {
-  "code": "archimedes-water",
+  "code": "archimedes-saltwater",
   "classByType": {
-    "archimedes-water-d-*": "BlockArchimedesWaterfall",
-    "archimedes-water-still-*": "BlockArchimedesWaterStill",
+    "archimedes-saltwater-d-*": "BlockArchimedesWaterfall",
+    "archimedes-saltwater-still-*": "BlockArchimedesWaterStill",
     "*": "BlockArchimedesWaterFlowing"
   },
   "behaviors": [
@@ -18,6 +18,8 @@
     }
   ],
   "attributes": {
+    "mapColorCode": "ocean",
+    "freezable": false,
     "smothersFire": true,
     "pushVectorByType": {
       "*-n-*": { "x": 0, "y": 0, "z": -0.0015 },
@@ -33,7 +35,7 @@
     "waterTightContainerProps": {
       "containable": true,
       "itemsPerLitre": 0.001,
-      "whenFilled": { "stack": { "type": "item", "code": "waterportion" } }
+      "whenFilled": { "stack": { "type": "item", "code": "saltwaterportion" } }
     }
   },
   "shape": { "base": "game:block/basic/cube" },
@@ -46,7 +48,7 @@
   "matterstate": "liquid",
   "blockmaterial": "liquid",
   "faceCullMode": "liquid",
-  "liquidCode": "water",
+  "liquidCode": "saltwater",
   "snowCoverage": false,
   "materialdensity": 1000,
   "replaceable": 9500,
@@ -63,8 +65,8 @@
     "*-7": 7
   },
   "textures": {
-    "all": { "base": "game:block/liquid/water" },
-    "specialSecondTexture": { "base": "game:block/liquid/water2" }
+    "all": { "base": "game:block/liquid/saltwater" },
+    "specialSecondTexture": { "base": "game:block/liquid/saltwater2" }
   },
   "sidesolid": {
     "all": false
@@ -75,11 +77,11 @@
   "collisionbox": null,
   "selectionbox": null,
   "soundsByType": {
-    "archimedes-water-still-*": {
+    "archimedes-saltwater-still-*": {
       "place": "block/water",
       "inside": "walk/water"
     },
-    "archimedes-water-d-*": {
+    "archimedes-saltwater-d-*": {
       "place": "block/water",
       "inside": "walk/water"
     },
@@ -89,8 +91,8 @@
     }
   },
   "particlePropertiesByType": {
-    "archimedes-water-still-*": [],
-    "archimedes-water-d-*": [
+    "archimedes-saltwater-still-*": [],
+    "archimedes-saltwater-d-*": [
       {
         "hsvaColor": [{ "avg": 110, "var": 0 }, { "avg": 80, "var": 40 }, { "avg": 210, "var": 30 }, { "avg": 150, "var": 25 }],
         "opacityEvolve": { "transform": "quadratic", "factor": -16 },

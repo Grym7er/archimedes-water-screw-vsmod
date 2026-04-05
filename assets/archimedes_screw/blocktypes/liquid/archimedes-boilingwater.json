@@ -1,8 +1,8 @@
 {
-  "code": "archimedes-water",
+  "code": "archimedes-boilingwater",
   "classByType": {
-    "archimedes-water-d-*": "BlockArchimedesWaterfall",
-    "archimedes-water-still-*": "BlockArchimedesWaterStill",
+    "archimedes-boilingwater-d-*": "BlockArchimedesWaterfall",
+    "archimedes-boilingwater-still-*": "BlockArchimedesWaterStill",
     "*": "BlockArchimedesWaterFlowing"
   },
   "behaviors": [
@@ -15,9 +15,16 @@
         "flowingReplacementCode": "rock-basalt",
         "collidesWith": "lava"
       }
-    }
+    },
+    { "name": "Steaming" },
+    { "name": "HeatSource", "properties": { "heatStrength": 3 } }
   ],
   "attributes": {
+    "killPlantRadius": 3,
+    "canStep": false,
+    "insideDamage": 1,
+    "damageType": "Acid",
+    "freezable": false,
     "smothersFire": true,
     "pushVectorByType": {
       "*-n-*": { "x": 0, "y": 0, "z": -0.0015 },
@@ -46,11 +53,11 @@
   "matterstate": "liquid",
   "blockmaterial": "liquid",
   "faceCullMode": "liquid",
-  "liquidCode": "water",
+  "liquidCode": "boilingwater",
   "snowCoverage": false,
   "materialdensity": 1000,
   "replaceable": 9500,
-  "lightAbsorption": 1,
+  "lightAbsorption": 2,
   "climateColorMap": "climateWaterTint",
   "drops": [],
   "liquidLevelByType": {
@@ -75,11 +82,11 @@
   "collisionbox": null,
   "selectionbox": null,
   "soundsByType": {
-    "archimedes-water-still-*": {
+    "archimedes-boilingwater-still-*": {
       "place": "block/water",
       "inside": "walk/water"
     },
-    "archimedes-water-d-*": {
+    "archimedes-boilingwater-d-*": {
       "place": "block/water",
       "inside": "walk/water"
     },
@@ -89,8 +96,8 @@
     }
   },
   "particlePropertiesByType": {
-    "archimedes-water-still-*": [],
-    "archimedes-water-d-*": [
+    "archimedes-boilingwater-still-*": [],
+    "archimedes-boilingwater-d-*": [
       {
         "hsvaColor": [{ "avg": 110, "var": 0 }, { "avg": 80, "var": 40 }, { "avg": 210, "var": 30 }, { "avg": 150, "var": 25 }],
         "opacityEvolve": { "transform": "quadratic", "factor": -16 },

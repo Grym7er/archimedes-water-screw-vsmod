@@ -50,7 +50,7 @@
   "replaceable": 160,
   "resistance": 1.75,
   "sidesolid": {
-    "all": false
+    "all": true
   },
   "sideopaque": {
     "all": false
@@ -62,6 +62,6 @@
     "walk": "game:walk/stone"
   },
   "collisionselectionboxByType": {
-    "*": { "x1": 0.125, "y1": 0, "z1": 0.125, "x2": 0.875, "y2": 1, "z2": 0.875 }
+    "*": { "x1": 0, "y1": 0, "z1": 0, "x2": 1, "y2": 1, "z2": 1 }
   }
 }

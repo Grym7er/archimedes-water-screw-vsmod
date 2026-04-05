@@ -78,7 +78,7 @@ public static class ArchimedesScrewAssemblyAnalyzer
             {
                 IsFunctional = false,
                 IsAssemblyValid = false,
-                Message = "Intake is not placed inside a full non-flowing source liquid block.",
+                Message = "Intake is not placed inside a supported vanilla water block.",
                 IntakePos = intakeEntry.Pos,
                 TopPos = topPos
             };
@@ -226,9 +226,14 @@ public static class ArchimedesScrewAssemblyAnalyzer
     {
         bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer;
         bool fluidClear = fluidBlock.Id == 0 ||
-                          (fluidBlock.Code?.Domain == ArchimedesScrewModSystem.ModId &&
-                           fluidBlock.Code.Path.StartsWith(ArchimedesScrewModSystem.ManagedWaterCode, System.StringComparison.Ordinal));
+                          ArchimedesWaterFamilies.IsManagedWater(fluidBlock) ||
+                          IsVanillaWaterBlock(fluidBlock);
 
         return solidClear && fluidClear;
+    }
+
+    private static bool IsVanillaWaterBlock(Block block)
+    {
+        return block.IsLiquid() && ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _);
     }
 }

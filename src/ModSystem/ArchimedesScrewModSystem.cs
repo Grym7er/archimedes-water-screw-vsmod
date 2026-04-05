@@ -11,7 +11,6 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     public const string ModId = "archimedes_screw";
     public const string ScrewBlockCode = "water-archimedesscrew";
     public const string OutletBlockCode = "water-archimedesscrew-outlet";
-    public const string ManagedWaterCode = "archimedes-water";
 
     private ICoreAPI? api;
     private ICoreServerAPI? sapi;
@@ -45,14 +44,14 @@ public sealed class ArchimedesScrewModSystem : ModSystem
         {
             Config = JsonConvert.DeserializeObject<ArchimedesScrewConfig>(asset.ToText()) ?? new ArchimedesScrewConfig();
             api.Logger.Notification(
-                "{0} Loaded config: radius={1}, fastTickMs={2}, idleTickMs={3}, maxBlocksPerStep={4}, maxScrewLength={5}, minNetworkSpeed={6}",
+                "{0} Loaded config: fastTickMs={1}, idleTickMs={2}, maxBlocksPerStep={3}, maxScrewLength={4}, minNetworkSpeed={5}, maxVanillaConversionPasses={6}",
                 LogPrefix,
-                Config.Water.MaxRadius,
                 Config.Water.FastTickMs,
                 Config.Water.IdleTickMs,
                 Config.Water.MaxBlocksPerStep,
                 Config.Water.MaxScrewLength,
-                Config.Water.MinimumNetworkSpeed
+                Config.Water.MinimumNetworkSpeed,
+                Config.Water.MaxVanillaConversionPasses
             );
         }
         catch (JsonException ex)
@@ -72,6 +71,18 @@ public sealed class ArchimedesScrewModSystem : ModSystem
         api.Event.GameWorldSave += OnGameWorldSave;
 
         RegisterCommands(api);
+    }
+
+    public override void Dispose()
+    {
+        if (sapi != null)
+        {
+            sapi.Event.SaveGameLoaded -= OnSaveGameLoaded;
+            sapi.Event.GameWorldSave -= OnGameWorldSave;
+        }
+
+        WaterManager = null;
+        base.Dispose();
     }
 
     private void OnSaveGameLoaded()

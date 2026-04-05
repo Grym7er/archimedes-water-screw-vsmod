@@ -18,18 +18,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     private readonly Dictionary<string, BlockPos> ownedPositions = new(StringComparer.Ordinal);
 
-    private ArchimedesScrewModSystem? modSystem;
     private ArchimedesWaterNetworkManager? waterManager;
     private ArchimedesScrewConfig.WaterConfig? waterConfig;
 
     private long tickListenerId;
     private int currentIntervalMs;
-    private bool forceDrain;
     private bool wasController;
     private BlockPos? lastSeedPos;
     private bool? lastLoggedControllerState;
     private bool? lastLoggedPowerState;
     private string? lastLoggedSeedKey;
+    private string? lastLoggedSourceSummary;
 
     public string ControllerId { get; private set; } = Guid.NewGuid().ToString("N");
 
@@ -42,7 +41,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        modSystem = api.ModLoader.GetModSystem<ArchimedesScrewModSystem>();
+        ArchimedesScrewModSystem modSystem = api.ModLoader.GetModSystem<ArchimedesScrewModSystem>();
         waterManager = modSystem.WaterManager;
         waterConfig = modSystem.Config.Water;
 
@@ -53,7 +52,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (ownedPositions.Count > 0)
         {
             waterManager?.RegisterRestoredOwnership(ControllerId, Pos, ownedPositions.Values.ToList());
-            Log("Restored {0} owned managed-water positions from save", ownedPositions.Count);
+            Log("Restored {0} owned Archimedes source positions from save", ownedPositions.Count);
         }
 
         EnsureTickListener(waterConfig?.FastTickMs ?? 250);
@@ -70,6 +69,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     public override void OnBlockRemoved()
     {
         Log("Block removed at {0}: {1}", Pos, Block?.Code);
+        if (tickListenerId != 0)
+        {
+            UnregisterGameTickListener(tickListenerId);
+            tickListenerId = 0;
+        }
         ReleaseAllManagedWater("block removed");
         waterManager?.UnregisterScrewBlock(Pos);
         waterManager?.RemoveControllerSnapshot(ControllerId);
@@ -79,6 +83,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     public override void OnBlockUnloaded()
     {
         Log("Block unloaded at {0}", Pos);
+        if (tickListenerId != 0)
+        {
+            UnregisterGameTickListener(tickListenerId);
+            tickListenerId = 0;
+        }
         waterManager?.UnregisterLoadedController(ControllerId);
         base.OnBlockUnloaded();
     }
@@ -86,41 +95,87 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     public void NotifyManagedWaterRemoved(BlockPos pos)
     {
         ownedPositions.Remove(ArchimedesWaterNetworkManager.PosKey(pos));
-        forceDrain = true;
-        Log("Managed water removed externally at {0}; scheduling drain", pos);
+        MarkDirty();
+        Log("Tracked Archimedes source removed externally at {0}; ownership updated", pos);
+    }
+
+    public bool TryAdoptSource(BlockPos pos, string reason)
+    {
+        if (waterManager == null)
+        {
+            return false;
+        }
+
+        string key = ArchimedesWaterNetworkManager.PosKey(pos);
+        bool ownerAdded = waterManager.EnsureSourceOwnership(ControllerId, pos);
+        bool wasTracked = ownedPositions.ContainsKey(key);
+        ownedPositions[key] = pos.Copy();
+
+        if (!ownerAdded && wasTracked)
+        {
+            return false;
+        }
+
+        UpdateSnapshot();
+        Log("Owned source at {0} ({1})", pos, reason);
+        return true;
     }
 
     public void ClearOwnedStateAfterPurge()
     {
         ownedPositions.Clear();
-        forceDrain = false;
         wasController = false;
         lastSeedPos = null;
         lastLoggedSeedKey = null;
+        lastLoggedSourceSummary = null;
         MarkDirty();
-        Log("Cleared owned water state after purge");
+        Log("Cleared owned source state after purge");
     }
 
     public void ReleaseAllManagedWater(string reason = "unspecified")
     {
-        if (waterManager == null || ownedPositions.Count == 0)
+        if (waterManager == null)
         {
             ownedPositions.Clear();
-            waterManager?.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
-            Log("Release requested for reason '{0}', but no managed water was owned", reason);
+            Log("Release requested for reason '{0}', but water manager is null", reason);
+            return;
+        }
+
+        AdoptAllConnectedSources();
+
+        if (ownedPositions.Count == 0)
+        {
+            waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
+            Log("Release requested for reason '{0}', but no Archimedes sources were owned", reason);
             return;
         }
 
         int count = ownedPositions.Count;
         foreach (BlockPos ownedPos in ownedPositions.Values.ToArray())
         {
-            waterManager.ReleaseOwner(ControllerId, ownedPos);
+            waterManager.ReleaseSourceOwner(ControllerId, ownedPos);
         }
 
         ownedPositions.Clear();
         waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
         MarkDirty();
-        Log("Released {0} managed-water blocks because {1}", count, reason);
+        Log("Released {0} Archimedes source blocks because {1}", count, reason);
+    }
+
+    public bool TryGetActiveSeedState(out ArchimedesOutletState state)
+    {
+        state = default;
+        ControllerEvaluation evaluation = EvaluateController();
+        if (!evaluation.IsController ||
+            !evaluation.IsPowered ||
+            evaluation.FamilyId == null ||
+            evaluation.SeedPos == null)
+        {
+            return false;
+        }
+
+        state = new ArchimedesOutletState(ControllerId, evaluation.SeedPos.Copy(), evaluation.FamilyId);
+        return true;
     }
 
     public override void FromTreeAttributes(ITreeAttribute tree, IWorldAccessor worldAccessForResolve)
@@ -171,60 +226,31 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        BlockWaterArchimedesScrew? screwBlock = Block as BlockWaterArchimedesScrew;
-        if (screwBlock == null)
-        {
-            return;
-        }
+        ControllerEvaluation evaluation = EvaluateController();
+        LogStateChange("controller validity", ref lastLoggedControllerState, evaluation.IsController);
+        LogStateChange("powered state", ref lastLoggedPowerState, evaluation.IsPowered);
 
-        var assemblyStatus = ArchimedesScrewAssemblyAnalyzer.Analyze(Api.World, Pos, waterConfig.MinimumNetworkSpeed);
-        bool isController = screwBlock.IsIntakeBlock() && assemblyStatus.IsAssemblyValid;
-        LogStateChange("controller validity", ref lastLoggedControllerState, isController);
-        if (!isController)
+        if (!evaluation.IsController)
         {
-            if (ownedPositions.Count > 0)
-            {
-                ReleaseAllManagedWater($"assembly invalid: {assemblyStatus.Message}");
-            }
-
             wasController = false;
-            lastSeedPos = null;
-            lastLoggedSeedKey = null;
-            EnsureTickListener(waterConfig.IdleTickMs);
+            AdoptAllConnectedSources();
+            int removed = DrainUnsupportedSources(Array.Empty<BlockPos>(), Array.Empty<string>(), evaluation.FailureReason);
+            EnsureTickListener(ownedPositions.Count > 0 || removed > 0 ? waterConfig.FastTickMs : waterConfig.IdleTickMs);
             return;
         }
 
         wasController = true;
 
-        if (forceDrain)
+        if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
-            forceDrain = false;
-            ReleaseAllManagedWater("forceDrain flag set");
-            EnsureTickListener(waterConfig.FastTickMs);
+            AdoptAllConnectedSources();
+            int removed = DrainUnsupportedSources(Array.Empty<BlockPos>(), Array.Empty<string>(), evaluation.FailureReason);
+            EnsureTickListener(ownedPositions.Count > 0 || removed > 0 ? waterConfig.FastTickMs : waterConfig.IdleTickMs);
             return;
         }
 
-        if (HasLostManagedWater())
-        {
-            ReleaseAllManagedWater("owned managed water was lost");
-            EnsureTickListener(waterConfig.FastTickMs);
-            return;
-        }
-
-        bool isPowered = assemblyStatus.IsPowered;
-        LogStateChange("powered state", ref lastLoggedPowerState, isPowered);
-        if (!isPowered)
-        {
-            if (ownedPositions.Count > 0)
-            {
-                ReleaseAllManagedWater("mechanical power stopped");
-            }
-
-            EnsureTickListener(waterConfig.IdleTickMs);
-            return;
-        }
-
-        BlockPos seedPos = assemblyStatus.OutputPos?.Copy() ?? GetSeedPosition();
+        BlockPos seedPos = evaluation.SeedPos.Copy();
+        string familyId = evaluation.FamilyId;
         string seedKey = ArchimedesWaterNetworkManager.PosKey(seedPos);
         if (lastLoggedSeedKey != seedKey)
         {
@@ -232,102 +258,276 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             Log("Seed/output position is now {0}", seedPos);
         }
 
-        if (lastSeedPos != null && !lastSeedPos.Equals(seedPos) && ownedPositions.Count > 0)
-        {
-            ReleaseAllManagedWater("seed/output position changed");
-        }
-
         lastSeedPos = seedPos.Copy();
 
+        bool ensuredSeed = EnsureSeedSource(seedPos, familyId);
+        int convertedSources = waterManager.ConvertAdjacentVanillaSourcesIteratively(
+            seedPos,
+            waterConfig.MaxVanillaConversionPasses
+        );
+
+        waterManager.CollectConnectedManagedWater(seedPos, out Dictionary<string, BlockPos> connectedWater);
+        int adoptedSources = AdoptSourcesFromWaterMap(connectedWater);
+
+        List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWater.Keys);
+        int removedDisconnected = DrainUnsupportedSources(supportingSeeds.Select(seed => seed.SeedPos), connectedWater.Keys, string.Empty);
+
+        if (adoptedSources > 0 || ensuredSeed)
+        {
+            UpdateSnapshot();
+        }
+
+        bool shouldFastTick = ensuredSeed || convertedSources > 0 || removedDisconnected > 0 || adoptedSources > 0 || ownedPositions.Count == 0;
+        EnsureTickListener(shouldFastTick ? waterConfig.FastTickMs : waterConfig.IdleTickMs);
+
+        string sourceSummary =
+            $"seed={seedPos};connectedWater={connectedWater.Count};ownedSources={ownedPositions.Count};supportingSeeds={supportingSeeds.Count};convertedSources={convertedSources};adoptedSources={adoptedSources};removedDisconnected={removedDisconnected};nextIntervalMs={(shouldFastTick ? waterConfig.FastTickMs : waterConfig.IdleTickMs)}";
+        if (!string.Equals(lastLoggedSourceSummary, sourceSummary, StringComparison.Ordinal))
+        {
+            lastLoggedSourceSummary = sourceSummary;
+            Log(
+                "Source tick at {0}: connectedWater={1}, ownedSources={2}, supportingSeeds={3}, convertedSources={4}, adoptedSources={5}, removedDisconnected={6}, nextIntervalMs={7}",
+                seedPos,
+                connectedWater.Count,
+                ownedPositions.Count,
+                supportingSeeds.Count,
+                convertedSources,
+                adoptedSources,
+                removedDisconnected,
+                shouldFastTick ? waterConfig.FastTickMs : waterConfig.IdleTickMs
+            );
+        }
+    }
+
+    private ControllerEvaluation EvaluateController()
+    {
+        if (Api == null || waterManager == null || waterConfig == null)
+        {
+            return new ControllerEvaluation(false, false, "controller not initialized", null, null);
+        }
+
+        BlockWaterArchimedesScrew? screwBlock = Block as BlockWaterArchimedesScrew;
+        if (screwBlock == null || !screwBlock.IsIntakeBlock())
+        {
+            return new ControllerEvaluation(false, false, "block is not an intake controller", null, null);
+        }
+
+        ArchimedesScrewAssemblyAnalyzer.AssemblyStatus assemblyStatus = ArchimedesScrewAssemblyAnalyzer.Analyze(Api.World, Pos, waterConfig.MinimumNetworkSpeed);
+        if (!assemblyStatus.IsAssemblyValid)
+        {
+            return new ControllerEvaluation(false, false, $"assembly invalid: {assemblyStatus.Message}", null, assemblyStatus.OutputPos?.Copy());
+        }
+
+        Block intakeFluid = Api.World.BlockAccessor.GetBlock(Pos, BlockLayersAccess.Fluid);
+        if (!waterManager.TryResolveVanillaWaterFamily(intakeFluid, out string familyId))
+        {
+            return new ControllerEvaluation(false, assemblyStatus.IsPowered, $"unsupported intake fluid: {intakeFluid.Code}", null, assemblyStatus.OutputPos?.Copy());
+        }
+
+        BlockPos seedPos = assemblyStatus.OutputPos?.Copy() ?? GetSeedPosition();
         if (!CanUseSeedPosition(seedPos))
         {
-            if (ownedPositions.Count > 0)
-            {
-                ReleaseAllManagedWater("seed/output position is blocked");
-            }
-
-            Log("Seed/output position {0} is blocked by solid or non-managed fluid", seedPos);
-            EnsureTickListener(waterConfig.IdleTickMs);
-            return;
+            return new ControllerEvaluation(false, assemblyStatus.IsPowered, $"seed/output position {seedPos} is blocked", familyId, seedPos);
         }
 
-        if (!ownedPositions.ContainsKey(ArchimedesWaterNetworkManager.PosKey(seedPos)) && !waterManager.TryClaimWater(ControllerId, seedPos))
+        return new ControllerEvaluation(true, assemblyStatus.IsPowered, string.Empty, familyId, seedPos);
+    }
+
+    private List<ArchimedesOutletState> ResolveSupportingSeeds(BlockPos seedPos, IEnumerable<string> connectedWaterKeys)
+    {
+        HashSet<string> connectedKeySet = new(connectedWaterKeys, StringComparer.Ordinal);
+        List<ArchimedesOutletState> supporting = new();
+
+        foreach (ArchimedesOutletState activeSeed in waterManager!.GetActiveSeedStates())
         {
-            Log("Unable to claim seed/output position {0}", seedPos);
-            EnsureTickListener(waterConfig.IdleTickMs);
-            return;
+            if (activeSeed.ControllerId == ControllerId ||
+                activeSeed.SeedPos.Equals(seedPos) ||
+                connectedKeySet.Contains(ArchimedesWaterNetworkManager.PosKey(activeSeed.SeedPos)))
+            {
+                supporting.Add(new ArchimedesOutletState(activeSeed.ControllerId, activeSeed.SeedPos.Copy(), activeSeed.FamilyId));
+            }
         }
 
+        if (supporting.Count == 0)
+        {
+            supporting.Add(new ArchimedesOutletState(ControllerId, seedPos.Copy(), string.Empty));
+        }
+
+        return supporting
+            .GroupBy(seed => seed.ControllerId, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private bool EnsureSeedSource(BlockPos seedPos, string familyId)
+    {
+        if (waterManager == null)
+        {
+            return false;
+        }
+
+        bool changed = waterManager.EnsureSourceOwned(ControllerId, seedPos, familyId);
         ownedPositions[ArchimedesWaterNetworkManager.PosKey(seedPos)] = seedPos.Copy();
+        return changed;
+    }
 
-        List<BlockPos> growthCandidates = CollectGrowthCandidates(seedPos);
-        if (growthCandidates.Count == 0)
+    private int AdoptSourcesFromWaterMap(Dictionary<string, BlockPos> connectedWater)
+    {
+        if (waterManager == null)
         {
-            waterManager.UpdateControllerSnapshot(ControllerId, Pos, ownedPositions.Values.ToList());
-            EnsureTickListener(waterConfig.IdleTickMs);
-            MarkDirty();
-            Log("No growth candidates remain around seed/output position {0}; switching to idle tick", seedPos);
-            return;
+            return 0;
         }
 
-        int grown = 0;
-        foreach (BlockPos candidate in growthCandidates)
+        int adopted = 0;
+        foreach ((string key, BlockPos pos) in connectedWater)
         {
-            if (grown >= waterConfig.MaxBlocksPerStep)
-            {
-                break;
-            }
-
-            if (!waterManager.TryClaimWater(ControllerId, candidate))
+            Block fluidBlock = Api!.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+            if (!waterManager.IsArchimedesSourceBlock(fluidBlock))
             {
                 continue;
             }
 
-            ownedPositions[ArchimedesWaterNetworkManager.PosKey(candidate)] = candidate.Copy();
-            grown++;
+            if (TryAdoptSource(pos, "connected managed water"))
+            {
+                adopted++;
+            }
         }
 
-        waterManager.UpdateControllerSnapshot(ControllerId, Pos, ownedPositions.Values.ToList());
-        EnsureTickListener(grown > 0 ? waterConfig.FastTickMs : waterConfig.IdleTickMs);
-        MarkDirty();
-        Log(
-            "Growth tick at {0}: candidates={1}, grown={2}, ownedTotal={3}, nextIntervalMs={4}",
-            seedPos,
-            growthCandidates.Count,
-            grown,
-            ownedPositions.Count,
-            grown > 0 ? waterConfig.FastTickMs : waterConfig.IdleTickMs
-        );
+        return adopted;
     }
 
-    private bool HasLostManagedWater()
+    private void AdoptAllConnectedSources()
     {
-        if (Api == null || waterManager == null)
+        if (waterManager == null)
         {
-            return false;
+            return;
+        }
+
+        HashSet<string> scanStarts = new(StringComparer.Ordinal);
+        if (lastSeedPos != null)
+        {
+            scanStarts.Add(ArchimedesWaterNetworkManager.PosKey(lastSeedPos));
         }
 
         foreach (BlockPos pos in ownedPositions.Values)
         {
-            Block fluidBlock = Api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-            if (!waterManager.IsArchimedesWaterBlock(fluidBlock))
-            {
-                return true;
-            }
+            scanStarts.Add(ArchimedesWaterNetworkManager.PosKey(pos));
         }
 
-        return false;
+        HashSet<string> allVisited = new(StringComparer.Ordinal);
+        foreach (string key in scanStarts)
+        {
+            if (allVisited.Contains(key))
+            {
+                continue;
+            }
+
+            BlockPos startPos = ParsePosKey(key);
+            waterManager.CollectConnectedManagedWater(startPos, out Dictionary<string, BlockPos> connectedWater);
+
+            foreach (string visitedKey in connectedWater.Keys)
+            {
+                allVisited.Add(visitedKey);
+            }
+
+            foreach ((string sourceKey, BlockPos sourcePos) in connectedWater)
+            {
+                Block fluidBlock = Api!.World.BlockAccessor.GetBlock(sourcePos, BlockLayersAccess.Fluid);
+                if (!waterManager.IsArchimedesSourceBlock(fluidBlock))
+                {
+                    continue;
+                }
+
+                TryAdoptSource(sourcePos, "controller deactivation scan");
+            }
+        }
     }
 
-    private bool IsPowered()
+    private int DrainUnsupportedSources(IEnumerable<BlockPos> referenceSeeds, IEnumerable<string> supportedKeys, string reason)
     {
-        BEBehaviorMPArchimedesScrew? behavior = GetBehavior<BEBehaviorMPArchimedesScrew>();
-        if (behavior?.Network == null || waterConfig == null)
+        if (waterManager == null || waterConfig == null)
+        {
+            return 0;
+        }
+
+        HashSet<string> supportedKeySet = new(supportedKeys, StringComparer.Ordinal);
+        List<BlockPos> toRelease = ownedPositions.Values
+            .Where(pos => !supportedKeySet.Contains(ArchimedesWaterNetworkManager.PosKey(pos)))
+            .ToList();
+
+        if (toRelease.Count == 0)
+        {
+            return 0;
+        }
+
+        List<BlockPos> origins = referenceSeeds.Select(pos => pos.Copy()).ToList();
+        if (origins.Count == 0)
+        {
+            origins.Add(lastSeedPos?.Copy() ?? Pos.Copy());
+        }
+
+        int perTick = Math.Max(1, waterConfig.MaxBlocksPerStep);
+        List<BlockPos> releaseStep = toRelease
+            .OrderByDescending(pos => MinDistanceSquared(pos, origins))
+            .ThenByDescending(pos => pos.Y)
+            .Take(perTick)
+            .ToList();
+
+        foreach (BlockPos pos in releaseStep)
+        {
+            ownedPositions.Remove(ArchimedesWaterNetworkManager.PosKey(pos));
+            waterManager.ReleaseSourceOwner(ControllerId, pos);
+        }
+
+        UpdateSnapshot();
+        Log(
+            "Drain tick toward {0}: removedSources={1}, remainingSources={2}, reason={3}",
+            origins[0],
+            releaseStep.Count,
+            ownedPositions.Count,
+            reason
+        );
+
+        return releaseStep.Count;
+    }
+
+    private void UpdateSnapshot()
+    {
+        waterManager?.UpdateControllerSnapshot(ControllerId, Pos, ownedPositions.Values.ToList());
+        MarkDirty();
+    }
+
+    private bool CanUseSeedPosition(BlockPos seedPos)
+    {
+        if (Api == null)
         {
             return false;
         }
 
-        return Math.Abs(behavior.Network.Speed) >= waterConfig.MinimumNetworkSpeed;
+        Block solidBlock = Api.World.BlockAccessor.GetBlock(seedPos);
+        Block fluidBlock = Api.World.BlockAccessor.GetBlock(seedPos, BlockLayersAccess.Fluid);
+
+        bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer || waterManager?.IsArchimedesWaterBlock(solidBlock) == true;
+        bool fluidClear = fluidBlock.Id == 0 ||
+                          waterManager?.IsArchimedesWaterBlock(fluidBlock) == true ||
+                          (fluidBlock.IsLiquid() && ArchimedesWaterFamilies.TryResolveVanillaFamily(fluidBlock, out _));
+
+        return solidClear && fluidClear;
+    }
+
+    private BlockPos GetSeedPosition()
+    {
+        BlockPos topPos = FindTopScrewPos();
+        if (Api?.World.BlockAccessor.GetBlock(topPos) is BlockWaterArchimedesScrew topScrew && topScrew.IsOutletBlock())
+        {
+            BlockFacing? facing = topScrew.GetPortFacing();
+            if (facing != null)
+            {
+                return topPos.AddCopy(facing);
+            }
+        }
+
+        return topPos.UpCopy();
     }
 
     private BlockPos FindTopScrewPos()
@@ -347,94 +547,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         return top;
-    }
-
-    private BlockPos GetSeedPosition()
-    {
-        BlockPos topPos = FindTopScrewPos();
-        if (Api?.World.BlockAccessor.GetBlock(topPos) is BlockWaterArchimedesScrew topScrew && topScrew.IsOutletBlock())
-        {
-            BlockFacing? facing = topScrew.GetPortFacing();
-            if (facing != null)
-            {
-                return topPos.AddCopy(facing);
-            }
-        }
-
-        return topPos.UpCopy();
-    }
-
-    private bool CanUseSeedPosition(BlockPos seedPos)
-    {
-        if (Api == null)
-        {
-            return false;
-        }
-
-        Block solidBlock = Api.World.BlockAccessor.GetBlock(seedPos);
-        Block fluidBlock = Api.World.BlockAccessor.GetBlock(seedPos, BlockLayersAccess.Fluid);
-
-        bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer || waterManager?.IsArchimedesWaterBlock(solidBlock) == true;
-        bool fluidClear = fluidBlock.Id == 0 || waterManager?.IsArchimedesWaterBlock(fluidBlock) == true;
-
-        return solidClear && fluidClear;
-    }
-
-    private List<BlockPos> CollectGrowthCandidates(BlockPos seedPos)
-    {
-        List<BlockPos> candidates = new();
-        if (Api == null || waterConfig == null)
-        {
-            return candidates;
-        }
-
-        Queue<BlockPos> queue = new();
-        HashSet<string> visited = new(StringComparer.Ordinal);
-        HashSet<string> candidateKeys = new(StringComparer.Ordinal);
-
-        queue.Enqueue(seedPos);
-        visited.Add(ArchimedesWaterNetworkManager.PosKey(seedPos));
-
-        while (queue.Count > 0)
-        {
-            BlockPos current = queue.Dequeue();
-            foreach (BlockFacing face in BlockFacing.HORIZONTALS)
-            {
-                BlockPos next = current.AddCopy(face);
-                string nextKey = ArchimedesWaterNetworkManager.PosKey(next);
-
-                if (!IsWithinRadius(seedPos, next, waterConfig.MaxRadius))
-                {
-                    continue;
-                }
-
-                Block fluidBlock = Api.World.BlockAccessor.GetBlock(next, BlockLayersAccess.Fluid);
-                if (waterManager!.IsArchimedesWaterBlock(fluidBlock))
-                {
-                    if (visited.Add(nextKey))
-                    {
-                        queue.Enqueue(next);
-                    }
-
-                    continue;
-                }
-
-                Block solidBlock = Api.World.BlockAccessor.GetBlock(next);
-                if (solidBlock.Id == 0 && fluidBlock.Id == 0 && candidateKeys.Add(nextKey))
-                {
-                    candidates.Add(next);
-                }
-            }
-        }
-
-        return candidates;
-    }
-
-    private static bool IsWithinRadius(BlockPos center, BlockPos test, int radius)
-    {
-        int dx = test.X - center.X;
-        int dz = test.Z - center.Z;
-        return dx * dx + dz * dz <= radius * radius;
     }
 
     private void EnsureTickListener(int intervalMs)
@@ -459,24 +571,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         Log("Registered tick listener at {0} ms", intervalMs);
     }
 
-    private static int[] EncodePositions(IEnumerable<BlockPos> positions)
-    {
-        List<int> flat = new();
-        foreach (BlockPos pos in positions)
-        {
-            flat.Add(pos.X);
-            flat.Add(pos.Y);
-            flat.Add(pos.Z);
-        }
-
-        return flat.ToArray();
-    }
-
-    private static BlockPos DecodeSinglePos(int[] values)
-    {
-        return new BlockPos(values[0], values[1], values[2]);
-    }
-
     private void Log(string message, params object?[] args)
     {
         Api?.Logger.Notification($"{ArchimedesScrewModSystem.LogPrefix} [controller:{ControllerId}] {message}", args);
@@ -492,4 +586,62 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         lastValue = value;
         Log("{0} changed to {1}", name, value);
     }
+
+    private static int MinDistanceSquared(BlockPos pos, IEnumerable<BlockPos> origins)
+    {
+        return origins.Min(origin => DistanceSquared(pos, origin));
+    }
+
+    private static int DistanceSquared(BlockPos a, BlockPos b)
+    {
+        int dx = a.X - b.X;
+        int dy = a.Y - b.Y;
+        int dz = a.Z - b.Z;
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private static int[] EncodePositions(IEnumerable<BlockPos> positions)
+    {
+        List<int> flat = new();
+        foreach (BlockPos pos in positions)
+        {
+            flat.Add(pos.X);
+            flat.Add(pos.Y);
+            flat.Add(pos.Z);
+        }
+
+        return flat.ToArray();
+    }
+
+    private static BlockPos? DecodeSinglePos(int[]? values)
+    {
+        if (values == null || values.Length < 3)
+        {
+            return null;
+        }
+
+        return new BlockPos(values[0], values[1], values[2]);
+    }
+
+    private static BlockPos ParsePosKey(string key)
+    {
+        string[] parts = key.Split(',');
+        if (parts.Length < 3 ||
+            !int.TryParse(parts[0], out int x) ||
+            !int.TryParse(parts[1], out int y) ||
+            !int.TryParse(parts[2], out int z))
+        {
+            throw new FormatException($"Invalid position key format: '{key}'");
+        }
+
+        return new BlockPos(x, y, z);
+    }
+
+    private readonly record struct ControllerEvaluation(
+        bool IsController,
+        bool IsPowered,
+        string FailureReason,
+        string? FamilyId,
+        BlockPos? SeedPos
+    );
 }

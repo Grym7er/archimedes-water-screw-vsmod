@@ -9,11 +9,11 @@
   "block-water-archimedesscrew-outlet-south": "Water Archimedes Screw Outlet",
   "block-water-archimedesscrew-outlet-west": "Water Archimedes Screw Outlet",
   "tabname-archimedes_screw": "Archimedes Screw",
-  "archimedes-screw-requires-water": "Requires a full non-flowing source block at the intake position",
-  "config-max-radius": "Maximum radius",
+  "archimedes-screw-requires-water": "Requires a vanilla water block at the intake position",
   "config-fast-tick-ms": "Growth tick interval",
   "config-idle-tick-ms": "Idle tick interval",
-  "config-max-blocks-per-step": "Blocks grown per tick",
+  "config-max-blocks-per-step": "Sources removed per fast tick when draining",
   "config-max-screw-length": "Maximum screw length",
-  "config-minimum-network-speed": "Minimum powered speed"
+  "config-minimum-network-speed": "Minimum powered speed",
+  "config-max-vanilla-conversion-passes": "Vanilla source conversion passes per tick"
 }
