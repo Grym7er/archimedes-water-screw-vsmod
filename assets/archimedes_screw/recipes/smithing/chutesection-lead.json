@@ -1,5 +1,5 @@
 {
-  "ingredient": { "type": "item", "code": "ingot-*", "name": "metal", "allowedVariants": ["lead"] },
+  "ingredient": { "type": "item", "code": "game:ingot-lead"},
   "pattern": [
     [
       "#####",
