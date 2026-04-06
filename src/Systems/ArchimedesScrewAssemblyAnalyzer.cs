@@ -78,7 +78,7 @@ public static class ArchimedesScrewAssemblyAnalyzer
             {
                 IsFunctional = false,
                 IsAssemblyValid = false,
-                Message = "Intake is not placed inside a supported vanilla water block.",
+                Message = "Intake is not placed inside supported vanilla or Archimedes water.",
                 IntakePos = intakeEntry.Pos,
                 TopPos = topPos
             };

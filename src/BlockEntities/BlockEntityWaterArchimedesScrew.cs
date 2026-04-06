@@ -319,7 +319,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         Block intakeFluid = Api.World.BlockAccessor.GetBlock(Pos, BlockLayersAccess.Fluid);
-        if (!waterManager.TryResolveVanillaWaterFamily(intakeFluid, out string familyId))
+        if (!waterManager.TryResolveIntakeWaterFamily(intakeFluid, out string familyId))
         {
             return new ControllerEvaluation(false, assemblyStatus.IsPowered, $"unsupported intake fluid: {intakeFluid.Code}", null, assemblyStatus.OutputPos?.Copy());
         }

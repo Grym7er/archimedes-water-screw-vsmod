@@ -10,7 +10,6 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     public const string LogPrefix = "[archimedes_screw]";
     public const string ModId = "archimedes_screw";
     public const string ScrewBlockCode = "water-archimedesscrew";
-    public const string OutletBlockCode = "water-archimedesscrew-outlet";
 
     private ICoreAPI? api;
     private ICoreServerAPI? sapi;

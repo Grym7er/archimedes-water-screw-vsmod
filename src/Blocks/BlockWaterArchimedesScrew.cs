@@ -113,22 +113,6 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
             return this;
         }
 
-        if (IsLegacyOutletBlock())
-        {
-            BlockFacing playerFacing = SuggestedHVOrientation(byPlayer, blockSel)[0].Opposite;
-            string variant = playerFacing.Code;
-            BlockWaterArchimedesScrew? resolved = ResolveLegacyOutletVariantBlock(variant);
-            api.Logger.Notification(
-                "{0} Legacy outlet placement chose facing {1} and variant '{2}' for {3} at {4}",
-                ArchimedesScrewModSystem.LogPrefix,
-                playerFacing.Code,
-                variant,
-                Code,
-                blockSel.Position
-            );
-            return resolved ?? this;
-        }
-
         if (!IsUnifiedEndCapInHand())
         {
             return this;
@@ -139,7 +123,7 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
 
         if (TryResolveOutletPlacement(world, placePos, out _))
         {
-            string outletVariant = "outlet-" + facing.Code;
+            string outletVariant = "end-outlet-" + facing.Code;
             BlockWaterArchimedesScrew? outlet = ResolveMainScrewVariantBlock(outletVariant);
             api.Logger.Notification(
                 "{0} End-cap as outlet: variant {1} at {2}",
@@ -196,11 +180,6 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
                string.Equals(Variant["type"], "straight", StringComparison.Ordinal);
     }
 
-    private bool IsLegacyOutletBlock()
-    {
-        return Code.Path.StartsWith(ArchimedesScrewModSystem.OutletBlockCode, StringComparison.Ordinal);
-    }
-
     private bool IsUnifiedEndCapInHand()
     {
         if (!Code.Path.StartsWith(ArchimedesScrewModSystem.ScrewBlockCode, StringComparison.Ordinal))
@@ -210,20 +189,13 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
 
         string type = Variant["type"];
         return type.StartsWith("ported-", StringComparison.Ordinal) ||
-               type.StartsWith("outlet-", StringComparison.Ordinal);
+               type.StartsWith("end-outlet-", StringComparison.Ordinal);
     }
 
     private BlockWaterArchimedesScrew? ResolveMainScrewVariantBlock(string typeVariant)
     {
         return api.World.GetBlock(
             new AssetLocation(ArchimedesScrewModSystem.ModId, $"{ArchimedesScrewModSystem.ScrewBlockCode}-{typeVariant}")
-        ) as BlockWaterArchimedesScrew;
-    }
-
-    private BlockWaterArchimedesScrew? ResolveLegacyOutletVariantBlock(string typeVariant)
-    {
-        return api.World.GetBlock(
-            new AssetLocation(ArchimedesScrewModSystem.ModId, $"{ArchimedesScrewModSystem.OutletBlockCode}-{typeVariant}")
         ) as BlockWaterArchimedesScrew;
     }
 
@@ -266,13 +238,8 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
 
     public bool IsOutletBlock()
     {
-        if (Code.Path.StartsWith(ArchimedesScrewModSystem.OutletBlockCode, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        return Code.Path.StartsWith(ArchimedesScrewModSystem.ScrewBlockCode, StringComparison.Ordinal) &&
-               Variant["type"].StartsWith("outlet-", StringComparison.Ordinal);
+        return Code.Path.StartsWith(ArchimedesScrewModSystem.ScrewBlockCode + "-", StringComparison.Ordinal) &&
+               Variant["type"].StartsWith("end-outlet-", StringComparison.Ordinal);
     }
 
     public bool IsDirectionalEndBlock()
@@ -282,26 +249,14 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
 
     public BlockFacing? GetPortFacing()
     {
-        if (IsLegacyOutletBlock())
-        {
-            return Variant["type"] switch
-            {
-                "north" => BlockFacing.NORTH,
-                "east" => BlockFacing.EAST,
-                "south" => BlockFacing.SOUTH,
-                "west" => BlockFacing.WEST,
-                _ => null
-            };
-        }
-
         if (IsOutletBlock())
         {
             return Variant["type"] switch
             {
-                "outlet-north" => BlockFacing.NORTH,
-                "outlet-east" => BlockFacing.EAST,
-                "outlet-south" => BlockFacing.SOUTH,
-                "outlet-west" => BlockFacing.WEST,
+                "end-outlet-north" => BlockFacing.NORTH,
+                "end-outlet-east" => BlockFacing.EAST,
+                "end-outlet-south" => BlockFacing.SOUTH,
+                "end-outlet-west" => BlockFacing.WEST,
                 _ => null
             };
         }
@@ -319,12 +274,14 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
     public bool HasValidWaterIntake(IWorldAccessor world, BlockPos pos)
     {
         Block currentFluid = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        return IsWaterSourceBlock(currentFluid);
+        return IsValidIntakeFluidBlock(currentFluid);
     }
 
-    private static bool IsWaterSourceBlock(Block block)
+    /// <summary>Vanilla or mod-managed liquid suitable for an intake (family matches screw output).</summary>
+    private static bool IsValidIntakeFluidBlock(Block block)
     {
         return block.IsLiquid() &&
-               ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _);
+               (ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _) ||
+                ArchimedesWaterFamilies.TryResolveManagedFamily(block, out _));
     }
 }

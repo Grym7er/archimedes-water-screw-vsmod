@@ -25,8 +25,7 @@ Source code lives under `src/`:
 
 Asset and config files live under `assets/archimedes_screw/`:
 
-- `blocktypes/metal/waterarchimedesscrew.json`: intake and straight screw block asset using vanilla screw visuals.
-- `blocktypes/metal/waterarchimedesscrew-outlet.json`: upside-down outlet block asset for the top of the screw stack.
+- `blocktypes/metal/waterarchimedesscrew.json`: straight segment, intake (ported), and top outlet (`end-outlet-*`) variants using vanilla screw visuals.
 - `blocktypes/liquid/archimedes-water.json`: managed fresh-water family.
 - `blocktypes/liquid/archimedes-saltwater.json`: managed salt-water family.
 - `blocktypes/liquid/archimedes-boilingwater.json`: managed boiling-water family.

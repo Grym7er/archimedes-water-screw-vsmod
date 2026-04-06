@@ -185,6 +185,23 @@ public sealed class ArchimedesWaterNetworkManager
         return false;
     }
 
+    /// <summary>Vanilla or mod-managed Archimedes liquid at an intake cell (any flow/height).</summary>
+    public bool TryResolveIntakeWaterFamily(Block block, out string familyId)
+    {
+        if (TryResolveVanillaWaterFamily(block, out familyId))
+        {
+            return true;
+        }
+
+        if (TryResolveManagedWaterFamily(block, out familyId))
+        {
+            return true;
+        }
+
+        familyId = string.Empty;
+        return false;
+    }
+
     public List<ArchimedesOutletState> GetActiveSeedStates()
     {
         List<ArchimedesOutletState> states = new();
