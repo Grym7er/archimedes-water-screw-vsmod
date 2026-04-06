@@ -9,7 +9,7 @@
   "block-water-archimedesscrew-end-outlet-south": "Water Archimedes Screw Endcap",
   "block-water-archimedesscrew-end-outlet-west": "Water Archimedes Screw Endcap",
   "item-chutesection-lead": "Lead Pipe Section",
-  "tabname-archimedes_screw": "Archimedes Screw",
+  "game:tabname-archimedes_screw": "Archimedes Screw",
   "archimedes-screw-requires-water": "Requires vanilla or Archimedes water at the intake position",
   "archimedes-screw-endcap-context": "Place the end cap in vanilla or Archimedes water (intake) or on top of a straight screw or intake (outlet)",
   "config-fast-tick-ms": "Growth tick interval",
