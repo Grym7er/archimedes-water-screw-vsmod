@@ -1,0 +1,21 @@
+{
+  "ingredient": { "type": "item", "code": "ingot-*", "name": "metal", "allowedVariants": ["lead"] },
+  "pattern": [
+    [
+      "#####",
+      "#___#",
+      "#___#",
+      "#___#",
+      "#####"
+    ],
+    [
+      "#####",
+      "#___#",
+      "#___#",
+      "#___#",
+      "#####"
+    ]
+  ],
+  "name": "chutesection",
+  "output": { "type": "item", "code": "archimedes_screw:chutesection-lead" }
+}

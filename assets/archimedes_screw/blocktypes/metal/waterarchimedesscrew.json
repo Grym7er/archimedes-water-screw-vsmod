@@ -77,7 +77,7 @@
     "*-end-outlet-west": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 0 }
   },
   "textures": {
-    "all": { "base": "game:block/metal/sheet/copper1" }
+    "all": { "base": "game:block/metal/sheet/lead1" }
   },
   "blockmaterial": "Metal",
   "lightAbsorption": 0,
@@ -99,9 +99,9 @@
     "all": false
   },
   "sounds": {
-    "place": "block/chute",
-    "break": "block/chute",
-    "hit": "block/chute",
+    "place": "game:block/chute",
+    "break": "game:block/chute",
+    "hit": "game:block/chute",
     "walk": "game:walk/stone"
   },
   "collisionselectionboxByType": {

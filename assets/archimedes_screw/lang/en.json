@@ -8,6 +8,7 @@
   "block-water-archimedesscrew-end-outlet-east": "Water Archimedes Screw Outlet",
   "block-water-archimedesscrew-end-outlet-south": "Water Archimedes Screw Outlet",
   "block-water-archimedesscrew-end-outlet-west": "Water Archimedes Screw Outlet",
+  "item-chutesection-lead": "Lead Chute Section",
   "tabname-archimedes_screw": "Archimedes Screw",
   "archimedes-screw-requires-water": "Requires vanilla or Archimedes water at the intake position",
   "archimedes-screw-endcap-context": "Place the end cap in vanilla or Archimedes water (intake) or on top of a straight screw or intake (outlet)",

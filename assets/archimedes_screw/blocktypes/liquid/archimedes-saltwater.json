@@ -78,16 +78,20 @@
   "selectionbox": null,
   "soundsByType": {
     "archimedes-saltwater-still-*": {
-      "place": "block/water",
-      "inside": "walk/water"
+      "place": "game:block/water",
+      "inside": "game:walk/water",
+      "ambient": "game:environment/waterwaves",
+      "ambientBlockCount": 50
     },
     "archimedes-saltwater-d-*": {
-      "place": "block/water",
-      "inside": "walk/water"
+      "place": "game:block/water",
+      "inside": "game:walk/water",
+      "ambient": "game:environment/waterfall"
     },
     "*": {
-      "place": "block/water",
-      "inside": "walk/water"
+      "place": "game:block/water",
+      "inside": "game:walk/water",
+      "ambient": "game:environment/creek"
     }
   },
   "particlePropertiesByType": {
