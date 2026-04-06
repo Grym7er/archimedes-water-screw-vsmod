@@ -18,3 +18,12 @@ Run in a creative test world with visible server log (`[archimedes_screw]`). Use
 ## Result column (optional)
 
 Copy the table and add a **Result** column, or note pass/fail and build version per row.
+
+## Additional ownership tests (single-owner model)
+
+| ID | What to do | What you should see |
+|----|------------|---------------------|
+| **A1** | Build 2 active screws with same water family, close together, with connected output water. Place a **new vanilla source** adjacent to that connected managed water so it gets converted. | Converted source is owned by **one** controller only (no shared ownership behavior / no tug-of-war logs). |
+| **A2** | Determinism check: repeat **A1** twice with identical layout and placement order (after `/archscrew purge`). | The **same controller** wins assignment both times for the same source location. |
+| **A3** | Tie-break check: place two candidate outlets as symmetrically as possible around one new converted source. Repeat a few times. | Assignment remains stable and repeatable (no random flipping between controllers). |
+| **A4** | Create a connected network where controller X owns multiple sources, then invalidate X (break intake or remove power long enough). | X-owned source nodes are reassigned to the nearest **active valid** controller where possible; if none exists, those sources are drained by cleanup. |

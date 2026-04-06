@@ -165,6 +165,19 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         Log("Tracked Archimedes source removed externally at {0}; ownership updated", pos);
     }
 
+    internal void TrackAssignedSourceFromManager(BlockPos pos, string reason)
+    {
+        string key = ArchimedesWaterNetworkManager.PosKey(pos);
+        if (ownedPositions.ContainsKey(key))
+        {
+            return;
+        }
+
+        ownedPositions[key] = pos.Copy();
+        UpdateSnapshot();
+        Log("Assigned source at {0} ({1})", pos, reason);
+    }
+
     public bool TryAdoptSource(BlockPos pos, string reason)
     {
         if (waterManager == null)
@@ -173,15 +186,18 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         string key = ArchimedesWaterNetworkManager.PosKey(pos);
-        bool ownerAdded = waterManager.EnsureSourceOwnership(ControllerId, pos);
-        bool wasTracked = ownedPositions.ContainsKey(key);
-        ownedPositions[key] = pos.Copy();
-
-        if (!ownerAdded && wasTracked)
+        if (!waterManager.TryGetSourceOwner(pos, out string ownerId) ||
+            !string.Equals(ownerId, ControllerId, StringComparison.Ordinal))
         {
             return false;
         }
 
+        if (ownedPositions.ContainsKey(key))
+        {
+            return false;
+        }
+
+        ownedPositions[key] = pos.Copy();
         UpdateSnapshot();
         Log("Owned source at {0} ({1})", pos, reason);
         return true;
@@ -207,8 +223,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             Log("Release requested for reason '{0}', but water manager is null", reason);
             return;
         }
-
-        AdoptAllConnectedSources();
 
         if (ownedPositions.Count == 0)
         {
@@ -303,7 +317,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (!evaluation.IsController)
         {
             wasController = false;
-            AdoptAllConnectedSources();
             int removed = DrainUnsupportedSources(Array.Empty<BlockPos>(), Array.Empty<string>(), evaluation.FailureReason);
             ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
                 ? ArchimedesScrewControllerSchedule.HighCadence
@@ -316,7 +329,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
-            AdoptAllConnectedSources();
             int removed = DrainUnsupportedSources(Array.Empty<BlockPos>(), Array.Empty<string>(), evaluation.FailureReason);
             ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
                 ? ArchimedesScrewControllerSchedule.HighCadence
@@ -343,17 +355,16 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         );
 
         waterManager.CollectConnectedManagedWater(seedPos, out Dictionary<string, BlockPos> connectedWater);
-        int adoptedSources = AdoptSourcesFromWaterMap(connectedWater);
 
         List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWater.Keys);
         int removedDisconnected = DrainUnsupportedSources(supportingSeeds.Select(seed => seed.SeedPos), connectedWater.Keys, string.Empty);
 
-        if (adoptedSources > 0 || ensuredSeed)
+        if (ensuredSeed)
         {
             UpdateSnapshot();
         }
 
-        bool busyWork = ensuredSeed || convertedSources > 0 || removedDisconnected > 0 || adoptedSources > 0 || ownedPositions.Count == 0;
+        bool busyWork = ensuredSeed || convertedSources > 0 || removedDisconnected > 0 || ownedPositions.Count == 0;
         ArchimedesScrewControllerSchedule nextSchedule = busyWork
             ? ArchimedesScrewControllerSchedule.HighCadence
             : ArchimedesScrewControllerSchedule.LowCadence;
@@ -361,18 +372,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         int nextMs = nextSchedule == ArchimedesScrewControllerSchedule.HighCadence ? fastMs : idleMs;
         string sourceSummary =
-            $"seed={seedPos};connectedWater={connectedWater.Count};ownedSources={ownedPositions.Count};supportingSeeds={supportingSeeds.Count};convertedSources={convertedSources};adoptedSources={adoptedSources};removedDisconnected={removedDisconnected};schedule={nextSchedule};nextIntervalMs={nextMs}";
+            $"seed={seedPos};connectedWater={connectedWater.Count};ownedSources={ownedPositions.Count};supportingSeeds={supportingSeeds.Count};convertedSources={convertedSources};removedDisconnected={removedDisconnected};schedule={nextSchedule};nextIntervalMs={nextMs}";
         if (!string.Equals(lastLoggedSourceSummary, sourceSummary, StringComparison.Ordinal))
         {
             lastLoggedSourceSummary = sourceSummary;
             Log(
-                "Source tick at {0}: connectedWater={1}, ownedSources={2}, supportingSeeds={3}, convertedSources={4}, adoptedSources={5}, removedDisconnected={6}, schedule={7}, nextIntervalMs={8}",
+                "Source tick at {0}: connectedWater={1}, ownedSources={2}, supportingSeeds={3}, convertedSources={4}, removedDisconnected={5}, schedule={6}, nextIntervalMs={7}",
                 seedPos,
                 connectedWater.Count,
                 ownedPositions.Count,
                 supportingSeeds.Count,
                 convertedSources,
-                adoptedSources,
                 removedDisconnected,
                 nextSchedule,
                 nextMs
@@ -450,78 +460,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         bool changed = waterManager.EnsureSourceOwned(ControllerId, seedPos, familyId);
         ownedPositions[ArchimedesWaterNetworkManager.PosKey(seedPos)] = seedPos.Copy();
         return changed;
-    }
-
-    private int AdoptSourcesFromWaterMap(Dictionary<string, BlockPos> connectedWater)
-    {
-        if (waterManager == null)
-        {
-            return 0;
-        }
-
-        int adopted = 0;
-        foreach ((string key, BlockPos pos) in connectedWater)
-        {
-            Block fluidBlock = Api!.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-            if (!waterManager.IsArchimedesSourceBlock(fluidBlock))
-            {
-                continue;
-            }
-
-            if (TryAdoptSource(pos, "connected managed water"))
-            {
-                adopted++;
-            }
-        }
-
-        return adopted;
-    }
-
-    private void AdoptAllConnectedSources()
-    {
-        if (waterManager == null)
-        {
-            return;
-        }
-
-        HashSet<string> scanStarts = new(StringComparer.Ordinal);
-        if (lastSeedPos != null)
-        {
-            scanStarts.Add(ArchimedesWaterNetworkManager.PosKey(lastSeedPos));
-        }
-
-        foreach (BlockPos pos in ownedPositions.Values)
-        {
-            scanStarts.Add(ArchimedesWaterNetworkManager.PosKey(pos));
-        }
-
-        HashSet<string> allVisited = new(StringComparer.Ordinal);
-        foreach (string key in scanStarts)
-        {
-            if (allVisited.Contains(key))
-            {
-                continue;
-            }
-
-            BlockPos startPos = ParsePosKey(key);
-            waterManager.CollectConnectedManagedWater(startPos, out Dictionary<string, BlockPos> connectedWater);
-
-            foreach (string visitedKey in connectedWater.Keys)
-            {
-                allVisited.Add(visitedKey);
-            }
-
-            foreach ((string sourceKey, BlockPos sourcePos) in connectedWater)
-            {
-                Block fluidBlock = Api!.World.BlockAccessor.GetBlock(sourcePos, BlockLayersAccess.Fluid);
-                if (!waterManager.IsArchimedesSourceBlock(fluidBlock))
-                {
-                    continue;
-                }
-
-                TryAdoptSource(sourcePos, "controller deactivation scan");
-            }
-        }
     }
 
     private int DrainUnsupportedSources(IEnumerable<BlockPos> referenceSeeds, IEnumerable<string> supportedKeys, string reason)
