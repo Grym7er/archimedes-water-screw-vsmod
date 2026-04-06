@@ -1,13 +1,13 @@
 {
   "block-water-archimedesscrew-straight": "Water Archimedes Screw",
-  "block-water-archimedesscrew-ported-north": "Water Archimedes Screw Intake",
-  "block-water-archimedesscrew-ported-east": "Water Archimedes Screw Intake",
-  "block-water-archimedesscrew-ported-south": "Water Archimedes Screw Intake",
-  "block-water-archimedesscrew-ported-west": "Water Archimedes Screw Intake",
-  "block-water-archimedesscrew-end-outlet-north": "Water Archimedes Screw Outlet",
-  "block-water-archimedesscrew-end-outlet-east": "Water Archimedes Screw Outlet",
-  "block-water-archimedesscrew-end-outlet-south": "Water Archimedes Screw Outlet",
-  "block-water-archimedesscrew-end-outlet-west": "Water Archimedes Screw Outlet",
+  "block-water-archimedesscrew-ported-north": "Water Archimedes Screw Endcap",
+  "block-water-archimedesscrew-ported-east": "Water Archimedes Screw Endcap",
+  "block-water-archimedesscrew-ported-south": "Water Archimedes Screw Endcap",
+  "block-water-archimedesscrew-ported-west": "Water Archimedes Screw Endcap",
+  "block-water-archimedesscrew-end-outlet-north": "Water Archimedes Screw Endcap",
+  "block-water-archimedesscrew-end-outlet-east": "Water Archimedes Screw Endcap",
+  "block-water-archimedesscrew-end-outlet-south": "Water Archimedes Screw Endcap",
+  "block-water-archimedesscrew-end-outlet-west": "Water Archimedes Screw Endcap",
   "item-chutesection-lead": "Lead Pipe Section",
   "tabname-archimedes_screw": "Archimedes Screw",
   "archimedes-screw-requires-water": "Requires vanilla or Archimedes water at the intake position",
@@ -20,5 +20,7 @@
   "config-max-blocks-per-step": "Sources removed per fast tick when draining",
   "config-max-screw-length": "Maximum screw length",
   "config-minimum-network-speed": "Minimum powered speed",
-  "config-max-vanilla-conversion-passes": "Vanilla source conversion passes per tick"
+  "config-max-vanilla-conversion-passes": "Vanilla source conversion passes per tick",
+  "handbook-guide-title": "Archimedes Screw Guide",
+  "handbook-guide-text": "<strong>Archimedes Screw</strong><br><i>A powered pump for lifting and routing water.</i><br>The Archimedes Screw is a vertical multiblock that draws water at the intake and maintains water at the outlet. It creates a single source block at the outlet, which is maintained as long as mechanical power to the screw is maintained. If the screw loses power, or the flow is interrupted for any other reason, the created water is removed, along with any water that has been placed inside the water stream.<br><br><strong>Assembly Basics</strong><br>Build from bottom to top: place an end-cap in water to create an intake, stack straight screw segments above it, and place an end-cap on top to create an outlet. A valid assembly requires one intake at the bottom, one outlet at the top, and only straight segments between them. You can right-click on any of the archimedes screw parts to view the current status of the assembly. Mechanical power can be fed in through the top or bottom of the assembly."
 }
