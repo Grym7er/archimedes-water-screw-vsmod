@@ -32,6 +32,8 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     private readonly List<string> centralWaterTickOrder = new();
     private int centralWaterTickCursor;
     private long globalWaterTickListenerId;
+    private long postLoadReactivationListenerId;
+    private int postLoadReactivationAttemptsRemaining;
 
     public ArchimedesWaterNetworkManager(ICoreServerAPI api, ArchimedesScrewConfig config)
     {
@@ -42,6 +44,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     public void Dispose()
     {
         StopCentralWaterTick();
+        StopPostLoadReactivation();
         GC.SuppressFinalize(this);
     }
 
@@ -60,6 +63,91 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
             api.Event.UnregisterGameTickListener(globalWaterTickListenerId);
             globalWaterTickListenerId = 0;
         }
+    }
+
+    public void BeginPostLoadReactivation(int initialDelayMs = 300, int retryIntervalMs = 700, int maxAttempts = 8)
+    {
+        StopPostLoadReactivation();
+        postLoadReactivationAttemptsRemaining = Math.Max(1, maxAttempts);
+
+        int initialDelay = Math.Max(50, initialDelayMs);
+        int retryInterval = Math.Max(100, retryIntervalMs);
+        postLoadReactivationListenerId = api.Event.RegisterGameTickListener(
+            _ => OnPostLoadReactivationTick(retryInterval),
+            initialDelay
+        );
+    }
+
+    private void StopPostLoadReactivation()
+    {
+        if (postLoadReactivationListenerId != 0)
+        {
+            api.Event.UnregisterGameTickListener(postLoadReactivationListenerId);
+            postLoadReactivationListenerId = 0;
+        }
+    }
+
+    private void OnPostLoadReactivationTick(int retryIntervalMs)
+    {
+        if (postLoadReactivationAttemptsRemaining <= 0)
+        {
+            StopPostLoadReactivation();
+            return;
+        }
+
+        postLoadReactivationAttemptsRemaining--;
+        int touched = ReactivateManagedFluidsFromTrackedAnchors();
+
+        if (postLoadReactivationAttemptsRemaining <= 0)
+        {
+            StopPostLoadReactivation();
+            api.Logger.Notification(
+                "{0} Post-load managed fluid reactivation finished; touched={1}",
+                ArchimedesScrewModSystem.LogPrefix,
+                touched
+            );
+            return;
+        }
+
+        StopPostLoadReactivation();
+        postLoadReactivationListenerId = api.Event.RegisterGameTickListener(
+            _ => OnPostLoadReactivationTick(retryIntervalMs),
+            retryIntervalMs
+        );
+    }
+
+    public int ReactivateManagedFluidsFromTrackedAnchors()
+    {
+        HashSet<string> anchors = BuildManagedWaterAnchorKeys();
+        HashSet<string> allWaterKeys = new(StringComparer.Ordinal);
+        foreach (string key in anchors)
+        {
+            BlockPos pos = ParsePosKey(key);
+            CollectManagedComponentKeysAroundAnchor(pos, allWaterKeys);
+        }
+
+        int touched = 0;
+        foreach (string key in allWaterKeys)
+        {
+            BlockPos pos = ParsePosKey(key);
+            Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+            if (!IsArchimedesWaterBlock(fluid))
+            {
+                continue;
+            }
+
+            TriggerLiquidUpdates(pos, fluid);
+            touched++;
+        }
+
+        api.Logger.Notification(
+            "{0} Post-load managed fluid reactivation pass touched={1} (anchors={2})",
+            ArchimedesScrewModSystem.LogPrefix,
+            touched,
+            anchors.Count
+        );
+
+        return touched;
     }
 
     public void RegisterForCentralWaterTick(BlockEntityWaterArchimedesScrew controller)
@@ -656,30 +744,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
 
     public int PurgeManagedWater()
     {
-        HashSet<string> anchorKeys = new(StringComparer.Ordinal);
-
-        foreach (string key in sourceOwnerByPos.Keys)
-        {
-            anchorKeys.Add(key);
-        }
-
-        foreach (int[] flatPositions in controllerOwnedById.Values)
-        {
-            foreach (BlockPos pos in DecodePositions(flatPositions))
-            {
-                anchorKeys.Add(PosKey(pos));
-            }
-        }
-
-        foreach (string screwKey in screwBlockKeys)
-        {
-            anchorKeys.Add(screwKey);
-        }
-
-        foreach (string controllerPosKey in controllerPosById.Values)
-        {
-            anchorKeys.Add(controllerPosKey);
-        }
+        HashSet<string> anchorKeys = BuildManagedWaterAnchorKeys();
 
         foreach (WeakReference<BlockEntityWaterArchimedesScrew> pair in loadedControllers.Values)
         {
@@ -1040,6 +1105,44 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         {
             TryCollectManagedComponent(anchor.AddCopy(face), allWaterKeys);
         }
+    }
+
+    private HashSet<string> BuildManagedWaterAnchorKeys()
+    {
+        HashSet<string> anchorKeys = new(StringComparer.Ordinal);
+
+        foreach (string key in sourceOwnerByPos.Keys)
+        {
+            anchorKeys.Add(key);
+        }
+
+        foreach (int[] flatPositions in controllerOwnedById.Values)
+        {
+            foreach (BlockPos pos in DecodePositions(flatPositions))
+            {
+                anchorKeys.Add(PosKey(pos));
+            }
+        }
+
+        foreach (string screwKey in screwBlockKeys)
+        {
+            anchorKeys.Add(screwKey);
+        }
+
+        foreach (string controllerPosKey in controllerPosById.Values)
+        {
+            anchorKeys.Add(controllerPosKey);
+        }
+
+        foreach (WeakReference<BlockEntityWaterArchimedesScrew> wr in loadedControllers.Values)
+        {
+            if (wr.TryGetTarget(out BlockEntityWaterArchimedesScrew? controller))
+            {
+                anchorKeys.Add(PosKey(controller.Pos));
+            }
+        }
+
+        return anchorKeys;
     }
 
     private void TryCollectManagedComponent(BlockPos pos, HashSet<string> allWaterKeys)

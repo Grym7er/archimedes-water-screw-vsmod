@@ -93,6 +93,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     {
         sapi?.Logger.Notification("{0} Save game loaded, restoring water manager state", LogPrefix);
         WaterManager?.Load();
+        WaterManager?.BeginPostLoadReactivation();
     }
 
     private void OnGameWorldSave()
