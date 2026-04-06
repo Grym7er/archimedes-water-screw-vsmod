@@ -22,7 +22,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private ArchimedesScrewConfig.WaterConfig? waterConfig;
 
     private long nextCentralWaterTickDueMs;
-    private ArchimedesScrewControllerSchedule lastWaterSchedule = ArchimedesScrewControllerSchedule.HighCadence;
 
     private long assemblyAnalysisCachedAtMs = long.MinValue;
     private ArchimedesScrewAssemblyAnalyzer.AssemblyStatus? cachedAssemblyAnalysis;
@@ -127,7 +126,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     private void ScheduleNextWaterTick(ArchimedesScrewControllerSchedule schedule, int fastMs, int idleMs)
     {
-        lastWaterSchedule = schedule;
         int interval = schedule == ArchimedesScrewControllerSchedule.HighCadence ? fastMs : idleMs;
         nextCentralWaterTickDueMs = Environment.TickCount64 + Math.Max(1, interval);
     }
@@ -176,31 +174,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ownedPositions[key] = pos.Copy();
         UpdateSnapshot();
         Log("Assigned source at {0} ({1})", pos, reason);
-    }
-
-    public bool TryAdoptSource(BlockPos pos, string reason)
-    {
-        if (waterManager == null)
-        {
-            return false;
-        }
-
-        string key = ArchimedesWaterNetworkManager.PosKey(pos);
-        if (!waterManager.TryGetSourceOwner(pos, out string ownerId) ||
-            !string.Equals(ownerId, ControllerId, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (ownedPositions.ContainsKey(key))
-        {
-            return false;
-        }
-
-        ownedPositions[key] = pos.Copy();
-        UpdateSnapshot();
-        Log("Owned source at {0} ({1})", pos, reason);
-        return true;
     }
 
     public void ClearOwnedStateAfterPurge()

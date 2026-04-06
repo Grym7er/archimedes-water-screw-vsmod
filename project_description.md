@@ -5,3 +5,6 @@
 4. Use the vanilla archimedes screw placement, walking, and breaking sounds.
 5. Add a compatibility patch to work with the waterfall mod
 6. Let the mod generate the config in ModConfig and use the values from that config
+
+#Bugs:
+1. Water positions aren't correctly saved/loaded.

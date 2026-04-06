@@ -560,10 +560,36 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return true;
     }
 
-    public bool TryConvertVanillaSourceUsingAdjacentManagedFamily(BlockPos pos)
+    /// <summary>
+    /// Player-placement path: convert to managed source and assign ownership before neighbour updates
+    /// can immediately turn the cell into flowing water.
+    /// </summary>
+    public bool TryConvertVanillaSourceForPlayer(BlockPos pos, string familyId, string reason)
     {
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        if (!IsVanillaSourceBlock(fluidBlock))
+        if (!TryResolveVanillaWaterFamily(fluidBlock, out string currentFamilyId) ||
+            !string.Equals(currentFamilyId, familyId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        SetManagedWaterVariant(pos, familyId, "still", 7, triggerUpdates: false);
+        AssignConnectedSourceToActiveControllers(pos, reason);
+
+        // Apply fluid reactions after assignment to avoid the source->flowing race.
+        Block placed = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (placed.Id != 0)
+        {
+            TriggerLiquidUpdates(pos, placed);
+        }
+
+        return true;
+    }
+
+    public bool TryConvertVanillaSourceUsingAdjacentManagedFamilyForPlayer(BlockPos pos, string reason)
+    {
+        Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (!TryResolveVanillaWaterFamily(fluidBlock, out _))
         {
             return false;
         }
@@ -576,8 +602,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
                 continue;
             }
 
-            SetManagedSource(pos, familyId);
-            return true;
+            return TryConvertVanillaSourceForPlayer(pos, familyId, reason);
         }
 
         return false;
@@ -773,7 +798,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         SetManagedWaterVariant(pos, familyId, "still", 7);
     }
 
-    public void SetManagedWaterVariant(BlockPos pos, string familyId, string flow, int height)
+    public void SetManagedWaterVariant(BlockPos pos, string familyId, string flow, int height, bool triggerUpdates = true)
     {
         Block desiredBlock = GetManagedBlock(familyId, flow, height);
         Block currentFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
@@ -788,7 +813,10 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         }
 
         api.World.BlockAccessor.SetBlock(desiredBlock.Id, pos, BlockLayersAccess.Fluid);
-        TriggerLiquidUpdates(pos, desiredBlock);
+        if (triggerUpdates)
+        {
+            TriggerLiquidUpdates(pos, desiredBlock);
+        }
     }
 
     public static string PosKey(BlockPos pos)
@@ -820,11 +848,6 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     {
         byte[] data = api.WorldManager.SaveGame.GetData(key);
         return data == null ? default : SerializerUtil.Deserialize<T>(data);
-    }
-
-    public bool TryGetSourceOwner(BlockPos pos, out string ownerId)
-    {
-        return sourceOwnerByPos.TryGetValue(PosKey(pos), out ownerId!);
     }
 
     private bool AssignNearestActiveControllerForNewSource(BlockPos sourcePos, string familyId, string reason = "new source assignment")
