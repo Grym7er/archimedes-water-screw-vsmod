@@ -15,13 +15,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private const string ControllerIdKey = "controllerId";
     private const string LastSeedKey = "lastSeed";
     private const string WasControllerKey = "wasController";
+    private const int LowCadenceConnectivityScanStride = 3;
 
     private readonly Dictionary<string, BlockPos> ownedPositions = new(StringComparer.Ordinal);
+    private static readonly HashSet<string> EmptyKeySet = new(StringComparer.Ordinal);
 
     private ArchimedesWaterNetworkManager? waterManager;
     private ArchimedesScrewConfig.WaterConfig? waterConfig;
 
     private long nextCentralWaterTickDueMs;
+    private ArchimedesScrewControllerSchedule lastScheduledCadence = ArchimedesScrewControllerSchedule.HighCadence;
+    private int lowCadenceScanSkipsRemaining;
 
     private long assemblyAnalysisCachedAtMs = long.MinValue;
     private ArchimedesScrewAssemblyAnalyzer.AssemblyStatus? cachedAssemblyAnalysis;
@@ -31,7 +35,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private bool? lastLoggedControllerState;
     private bool? lastLoggedPowerState;
     private string? lastLoggedSeedKey;
-    private string? lastLoggedSourceSummary;
 
     public string ControllerId { get; private set; } = Guid.NewGuid().ToString("N");
 
@@ -128,6 +131,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     {
         int interval = schedule == ArchimedesScrewControllerSchedule.HighCadence ? fastMs : idleMs;
         nextCentralWaterTickDueMs = Environment.TickCount64 + Math.Max(1, interval);
+        lastScheduledCadence = schedule;
     }
 
     private ArchimedesScrewAssemblyAnalyzer.AssemblyStatus GetOrRefreshAssemblyAnalysis()
@@ -182,7 +186,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         wasController = false;
         lastSeedPos = null;
         lastLoggedSeedKey = null;
-        lastLoggedSourceSummary = null;
         InvalidateAssemblyAnalysisCache();
         MarkDirty();
         Log("Cleared owned source state after purge");
@@ -275,6 +278,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     private void OnWaterControllerTick()
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("controller.tick");
         if (Api == null || Api.Side != EnumAppSide.Server || waterManager == null || waterConfig == null)
         {
             return;
@@ -290,7 +294,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (!evaluation.IsController)
         {
             wasController = false;
-            int removed = DrainUnsupportedSources(Array.Empty<BlockPos>(), Array.Empty<string>(), evaluation.FailureReason);
+            int removed = DrainUnsupportedSources(
+                Array.Empty<ArchimedesOutletState>(),
+                EmptyKeySet,
+                evaluation.FailureReason);
             ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
                 ? ArchimedesScrewControllerSchedule.HighCadence
                 : ArchimedesScrewControllerSchedule.LowCadence;
@@ -302,7 +309,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
-            int removed = DrainUnsupportedSources(Array.Empty<BlockPos>(), Array.Empty<string>(), evaluation.FailureReason);
+            int removed = DrainUnsupportedSources(
+                Array.Empty<ArchimedesOutletState>(),
+                EmptyKeySet,
+                evaluation.FailureReason);
             ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
                 ? ArchimedesScrewControllerSchedule.HighCadence
                 : ArchimedesScrewControllerSchedule.LowCadence;
@@ -323,10 +333,24 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         bool ensuredSeed = EnsureSeedSource(seedPos, familyId);
 
-        waterManager.CollectConnectedManagedWater(seedPos, out Dictionary<string, BlockPos> connectedWater);
+        bool canSkipConnectivityScan =
+            lastScheduledCadence == ArchimedesScrewControllerSchedule.LowCadence &&
+            !ensuredSeed &&
+            lowCadenceScanSkipsRemaining > 0;
 
-        List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWater.Keys);
-        int removedDisconnected = DrainUnsupportedSources(supportingSeeds.Select(seed => seed.SeedPos), connectedWater.Keys, string.Empty);
+        if (canSkipConnectivityScan)
+        {
+            lowCadenceScanSkipsRemaining--;
+            ArchimedesPerf.AddCount("controller.connectivityScan.skipped");
+            ScheduleNextWaterTick(ArchimedesScrewControllerSchedule.LowCadence, fastMs, idleMs);
+            ArchimedesPerf.MaybeFlush(Api);
+            return;
+        }
+
+        HashSet<string> connectedWaterKeys = waterManager.CollectConnectedManagedWaterCached(seedPos, out Dictionary<string, BlockPos> connectedWater);
+
+        List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWaterKeys);
+        int removedDisconnected = DrainUnsupportedSources(supportingSeeds, connectedWaterKeys, string.Empty);
 
         if (ensuredSeed)
         {
@@ -337,25 +361,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ArchimedesScrewControllerSchedule nextSchedule = busyWork
             ? ArchimedesScrewControllerSchedule.HighCadence
             : ArchimedesScrewControllerSchedule.LowCadence;
+        lowCadenceScanSkipsRemaining = nextSchedule == ArchimedesScrewControllerSchedule.LowCadence
+            ? LowCadenceConnectivityScanStride - 1
+            : 0;
         ScheduleNextWaterTick(nextSchedule, fastMs, idleMs);
 
-        int nextMs = nextSchedule == ArchimedesScrewControllerSchedule.HighCadence ? fastMs : idleMs;
-        string sourceSummary =
-            $"seed={seedPos};connectedWater={connectedWater.Count};ownedSources={ownedPositions.Count};supportingSeeds={supportingSeeds.Count};removedDisconnected={removedDisconnected};schedule={nextSchedule};nextIntervalMs={nextMs}";
-        if (!string.Equals(lastLoggedSourceSummary, sourceSummary, StringComparison.Ordinal))
-        {
-            lastLoggedSourceSummary = sourceSummary;
-            Log(
-                "Source tick at {0}: connectedWater={1}, ownedSources={2}, supportingSeeds={3}, removedDisconnected={4}, schedule={5}, nextIntervalMs={6}",
-                seedPos,
-                connectedWater.Count,
-                ownedPositions.Count,
-                supportingSeeds.Count,
-                removedDisconnected,
-                nextSchedule,
-                nextMs
-            );
-        }
+        ArchimedesPerf.MaybeFlush(Api);
     }
 
     private ControllerEvaluation EvaluateController()
@@ -392,13 +403,18 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return new ControllerEvaluation(true, assemblyStatus.IsPowered, string.Empty, familyId, seedPos);
     }
 
-    private List<ArchimedesOutletState> ResolveSupportingSeeds(BlockPos seedPos, IEnumerable<string> connectedWaterKeys)
+    private List<ArchimedesOutletState> ResolveSupportingSeeds(BlockPos seedPos, HashSet<string> connectedKeySet)
     {
-        HashSet<string> connectedKeySet = new(connectedWaterKeys, StringComparer.Ordinal);
         List<ArchimedesOutletState> supporting = new();
+        HashSet<string> seenControllerIds = new(StringComparer.Ordinal);
 
-        foreach (ArchimedesOutletState activeSeed in waterManager!.GetActiveSeedStates())
+        foreach (ArchimedesOutletState activeSeed in waterManager!.GetActiveSeedStatesCached())
         {
+            if (!seenControllerIds.Add(activeSeed.ControllerId))
+            {
+                continue;
+            }
+
             if (activeSeed.ControllerId == ControllerId ||
                 activeSeed.SeedPos.Equals(seedPos) ||
                 connectedKeySet.Contains(ArchimedesWaterNetworkManager.PosKey(activeSeed.SeedPos)))
@@ -412,10 +428,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             supporting.Add(new ArchimedesOutletState(ControllerId, seedPos.Copy(), string.Empty));
         }
 
-        return supporting
-            .GroupBy(seed => seed.ControllerId, StringComparer.Ordinal)
-            .Select(group => group.First())
-            .ToList();
+        return supporting;
     }
 
     private bool EnsureSeedSource(BlockPos seedPos, string familyId)
@@ -430,38 +443,57 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return changed;
     }
 
-    private int DrainUnsupportedSources(IEnumerable<BlockPos> referenceSeeds, IEnumerable<string> supportedKeys, string reason)
+    private int DrainUnsupportedSources(IReadOnlyCollection<ArchimedesOutletState> referenceSeeds, HashSet<string> supportedKeySet, string reason)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("controller.drainUnsupported");
         if (waterManager == null || waterConfig == null)
         {
             return 0;
         }
 
-        HashSet<string> supportedKeySet = new(supportedKeys, StringComparer.Ordinal);
-        List<BlockPos> toRelease = ownedPositions.Values
-            .Where(pos => !supportedKeySet.Contains(ArchimedesWaterNetworkManager.PosKey(pos)))
-            .ToList();
+        List<BlockPos> toRelease = new();
+        foreach (BlockPos pos in ownedPositions.Values)
+        {
+            if (!supportedKeySet.Contains(ArchimedesWaterNetworkManager.PosKey(pos)))
+            {
+                toRelease.Add(pos);
+            }
+        }
 
         if (toRelease.Count == 0)
         {
             return 0;
         }
+        ArchimedesPerf.AddCount("controller.drainUnsupported.candidates", toRelease.Count);
 
-        List<BlockPos> origins = referenceSeeds.Select(pos => pos.Copy()).ToList();
+        List<BlockPos> origins = new(referenceSeeds.Count);
+        foreach (ArchimedesOutletState seed in referenceSeeds)
+        {
+            origins.Add(seed.SeedPos.Copy());
+        }
+
         if (origins.Count == 0)
         {
             origins.Add(lastSeedPos?.Copy() ?? Pos.Copy());
         }
 
         int perTick = Math.Max(1, waterConfig.MaxBlocksPerStep);
-        List<BlockPos> releaseStep = toRelease
-            .OrderByDescending(pos => MinDistanceSquared(pos, origins))
-            .ThenByDescending(pos => pos.Y)
-            .Take(perTick)
-            .ToList();
-
-        foreach (BlockPos pos in releaseStep)
+        toRelease.Sort((left, right) =>
         {
+            int distCmp = MinDistanceSquared(right, origins).CompareTo(MinDistanceSquared(left, origins));
+            if (distCmp != 0)
+            {
+                return distCmp;
+            }
+
+            return right.Y.CompareTo(left.Y);
+        });
+        int releaseCount = Math.Min(perTick, toRelease.Count);
+        ArchimedesPerf.AddCount("controller.drainUnsupported.releaseCount", releaseCount);
+
+        for (int i = 0; i < releaseCount; i++)
+        {
+            BlockPos pos = toRelease[i];
             ownedPositions.Remove(ArchimedesWaterNetworkManager.PosKey(pos));
             waterManager.ReleaseSourceOwner(ControllerId, pos);
         }
@@ -470,12 +502,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         Log(
             "Drain tick toward {0}: removedSources={1}, remainingSources={2}, reason={3}",
             origins[0],
-            releaseStep.Count,
+            releaseCount,
             ownedPositions.Count,
             reason
         );
 
-        return releaseStep.Count;
+        return releaseCount;
     }
 
     private void UpdateSnapshot()

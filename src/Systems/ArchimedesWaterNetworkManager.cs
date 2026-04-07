@@ -30,7 +30,14 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
 
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> centralWaterTickControllers = new(StringComparer.Ordinal);
     private readonly List<string> centralWaterTickOrder = new();
+    private readonly HashSet<string> centralWaterTickSet = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ConnectedManagedComponentCacheEntry> connectedManagedComponentCache = new(StringComparer.Ordinal);
+    private readonly List<ArchimedesOutletState> activeSeedStatesCache = new();
     private int centralWaterTickCursor;
+    private int centralWaterTickCountDownToCompaction = 20;
+    private int connectedManagedComponentCacheGeneration;
+    private int activeSeedStatesCacheGeneration = -1;
+    private bool isInGlobalWaterTickDispatch;
     private long globalWaterTickListenerId;
     private long postLoadReactivationListenerId;
     private int postLoadReactivationAttemptsRemaining;
@@ -160,7 +167,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     {
         string id = controller.ControllerId;
         centralWaterTickControllers[id] = new WeakReference<BlockEntityWaterArchimedesScrew>(controller);
-        if (!centralWaterTickOrder.Contains(id))
+        if (centralWaterTickSet.Add(id))
         {
             centralWaterTickOrder.Add(id);
         }
@@ -169,48 +176,72 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     public void UnregisterFromCentralWaterTick(string controllerId)
     {
         centralWaterTickControllers.Remove(controllerId);
+        if (!centralWaterTickSet.Remove(controllerId))
+        {
+            return;
+        }
+
         centralWaterTickOrder.RemoveAll(s => string.Equals(s, controllerId, StringComparison.Ordinal));
     }
 
     private void OnGlobalWaterTick(float dt)
     {
-        CompactCentralWaterTickList();
-
-        long now = Environment.TickCount64;
-        int budget = Math.Max(1, config.Water.MaxControllersPerGlobalTick);
-        int n = centralWaterTickOrder.Count;
-        if (n == 0)
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.globalTick");
+        isInGlobalWaterTickDispatch = true;
+        try
         {
-            return;
-        }
+            connectedManagedComponentCacheGeneration++;
+            connectedManagedComponentCache.Clear();
+            activeSeedStatesCacheGeneration = -1;
+            activeSeedStatesCache.Clear();
+            if (--centralWaterTickCountDownToCompaction <= 0)
+            {
+                CompactCentralWaterTickList();
+                centralWaterTickCountDownToCompaction = 20;
+            }
 
-        int processed = 0;
-        for (int step = 0; step < n; step++)
+            long now = Environment.TickCount64;
+            int budget = Math.Max(1, config.Water.MaxControllersPerGlobalTick);
+            int n = centralWaterTickOrder.Count;
+            if (n == 0)
+            {
+                return;
+            }
+
+            int processed = 0;
+            for (int step = 0; step < n; step++)
+            {
+                if (processed >= budget)
+                {
+                    break;
+                }
+
+                int idx = (centralWaterTickCursor + step) % n;
+                string id = centralWaterTickOrder[idx];
+
+                if (!centralWaterTickControllers.TryGetValue(id, out WeakReference<BlockEntityWaterArchimedesScrew>? wr) ||
+                    !wr.TryGetTarget(out BlockEntityWaterArchimedesScrew? be))
+                {
+                    continue;
+                }
+
+                if (!be.IsCentralWaterTickDue(now))
+                {
+                    continue;
+                }
+
+                be.RunCentralWaterTick();
+                processed++;
+            }
+
+            ArchimedesPerf.AddCount("water.globalTick.processedControllers", processed);
+            centralWaterTickCursor = (centralWaterTickCursor + 1) % n;
+        }
+        finally
         {
-            if (processed >= budget)
-            {
-                break;
-            }
-
-            int idx = (centralWaterTickCursor + step) % n;
-            string id = centralWaterTickOrder[idx];
-
-            if (!centralWaterTickControllers.TryGetValue(id, out WeakReference<BlockEntityWaterArchimedesScrew>? wr) ||
-                !wr.TryGetTarget(out BlockEntityWaterArchimedesScrew? be))
-            {
-                continue;
-            }
-
-            if (!be.IsCentralWaterTickDue(now))
-            {
-                continue;
-            }
-
-            be.RunCentralWaterTick();
-            processed++;
+            isInGlobalWaterTickDispatch = false;
+            ArchimedesPerf.MaybeFlush(api);
         }
-
-        centralWaterTickCursor = (centralWaterTickCursor + 1) % n;
     }
 
     private void CompactCentralWaterTickList()
@@ -223,6 +254,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
             {
                 centralWaterTickOrder.RemoveAt(i);
                 centralWaterTickControllers.Remove(id);
+                centralWaterTickSet.Remove(id);
             }
         }
 
@@ -427,8 +459,35 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return states;
     }
 
+    public IReadOnlyList<ArchimedesOutletState> GetActiveSeedStatesCached()
+    {
+        if (!isInGlobalWaterTickDispatch)
+        {
+            return GetActiveSeedStates();
+        }
+
+        if (activeSeedStatesCacheGeneration == connectedManagedComponentCacheGeneration)
+        {
+            return activeSeedStatesCache;
+        }
+
+        activeSeedStatesCache.Clear();
+        foreach (WeakReference<BlockEntityWaterArchimedesScrew> reference in loadedControllers.Values)
+        {
+            if (reference.TryGetTarget(out BlockEntityWaterArchimedesScrew? controller) &&
+                controller.TryGetActiveSeedState(out ArchimedesOutletState state))
+            {
+                activeSeedStatesCache.Add(state);
+            }
+        }
+
+        activeSeedStatesCacheGeneration = connectedManagedComponentCacheGeneration;
+        return activeSeedStatesCache;
+    }
+
     public HashSet<string> CollectConnectedManagedWater(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.collectConnectedManaged");
         positionsByKey = new Dictionary<string, BlockPos>(StringComparer.Ordinal);
         HashSet<string> visited = new(StringComparer.Ordinal);
 
@@ -478,6 +537,44 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
             }
         }
 
+        ArchimedesPerf.AddCount("water.collectConnectedManaged.visited", visited.Count);
+        return visited;
+    }
+
+    /// <summary>
+    /// Returns connected managed-water component for <paramref name="startPos"/> using a per-global-tick cache.
+    /// Consumers must treat returned collections as read-only.
+    /// </summary>
+    public HashSet<string> CollectConnectedManagedWaterCached(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
+    {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.collectConnectedManagedCached");
+        if (!isInGlobalWaterTickDispatch)
+        {
+            return CollectConnectedManagedWater(startPos, out positionsByKey);
+        }
+
+        string startKey = PosKey(startPos);
+        if (connectedManagedComponentCache.TryGetValue(startKey, out ConnectedManagedComponentCacheEntry? cached) &&
+            cached.Generation == connectedManagedComponentCacheGeneration)
+        {
+            positionsByKey = cached.PositionsByKey;
+            ArchimedesPerf.AddCount("water.collectConnectedManagedCached.hit");
+            return cached.Visited;
+        }
+
+        HashSet<string> visited = CollectConnectedManagedWater(startPos, out positionsByKey);
+        ConnectedManagedComponentCacheEntry entry = new(
+            connectedManagedComponentCacheGeneration,
+            visited,
+            positionsByKey
+        );
+        // Component-level fanout: any position in this connected region should hit cache this tick.
+        foreach (string key in visited)
+        {
+            connectedManagedComponentCache[key] = entry;
+        }
+        ArchimedesPerf.AddCount("water.collectConnectedManagedCached.miss");
+        ArchimedesPerf.AddCount("water.collectConnectedManagedCached.fanoutKeys", visited.Count);
         return visited;
     }
 
@@ -923,7 +1020,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
 
     private bool AssignNearestActiveControllerForNewSource(BlockPos sourcePos, string familyId, string reason = "new source assignment")
     {
-        CollectConnectedManagedWater(sourcePos, out Dictionary<string, BlockPos> connectedWater);
+        CollectConnectedManagedWaterCached(sourcePos, out Dictionary<string, BlockPos> connectedWater);
         string? nearest = FindNearestActiveControllerId(
             sourcePos,
             connectedWater.Keys,
@@ -951,12 +1048,13 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         bool requireConnected
     )
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.findNearestActiveController");
         HashSet<string>? connected = requireConnected
             ? new HashSet<string>(connectedWaterKeys, StringComparer.Ordinal)
             : null;
 
         List<ArchimedesOutletState> candidates = new();
-        foreach (ArchimedesOutletState seed in GetActiveSeedStates())
+        foreach (ArchimedesOutletState seed in GetActiveSeedStatesCached())
         {
             if (excludedControllerId != null &&
                 string.Equals(seed.ControllerId, excludedControllerId, StringComparison.Ordinal))
@@ -976,10 +1074,9 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
                     continue;
                 }
 
-                // Robust connectivity check for flowing/source mixes:
-                // verify that the source lies in the managed component reachable from the active seed.
-                CollectConnectedManagedWater(seed.SeedPos, out Dictionary<string, BlockPos> fromSeed);
-                if (!fromSeed.ContainsKey(PosKey(sourcePos)))
+                // Source component has already been collected by the caller.
+                // If a candidate seed's position is part of that same component, it is connected.
+                if (!connected.Contains(PosKey(seed.SeedPos)))
                 {
                     continue;
                 }
@@ -988,7 +1085,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
             candidates.Add(seed);
         }
 
-        return candidates
+        string? resolved = candidates
             .OrderBy(seed => DistanceSquared(sourcePos, seed.SeedPos))
             .ThenBy(seed => seed.SeedPos.Y)
             .ThenBy(seed => seed.SeedPos.X)
@@ -996,6 +1093,8 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
             .ThenBy(seed => seed.ControllerId, StringComparer.Ordinal)
             .Select(seed => seed.ControllerId)
             .FirstOrDefault();
+        ArchimedesPerf.AddCount("water.findNearestActiveController.candidates", candidates.Count);
+        return resolved;
     }
 
     private void NotifyControllerSourceAssigned(string controllerId, BlockPos sourcePos, string reason)
@@ -1081,6 +1180,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
 
     private void TriggerLiquidUpdates(BlockPos pos, Block placedFluid)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.triggerLiquidUpdates");
         api.World.BlockAccessor.TriggerNeighbourBlockUpdate(pos);
         api.World.BlockAccessor.MarkBlockDirty(pos);
 
@@ -1246,4 +1346,10 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         int dz = a.Z - b.Z;
         return dx * dx + dy * dy + dz * dz;
     }
+
+    private sealed record ConnectedManagedComponentCacheEntry(
+        int Generation,
+        HashSet<string> Visited,
+        Dictionary<string, BlockPos> PositionsByKey
+    );
 }

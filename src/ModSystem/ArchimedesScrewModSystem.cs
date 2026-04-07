@@ -173,6 +173,48 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     api.Logger.Notification("{0} Command purgescrews removed {1} screw blocks", LogPrefix, removed);
                     return TextCommandResult.Success($"Removed {removed} screw blocks.");
                 })
+            .EndSubCommand()
+            .BeginSubCommand("perf")
+                .WithDescription("Control Archimedes profiling logs (on/off/flush/status).")
+                .BeginSubCommand("on")
+                    .WithDescription("Enable periodic profiling logs.")
+                    .HandleWith(_ =>
+                    {
+                        ArchimedesPerf.SetEnabled(true);
+                        api.Logger.Notification("{0} Profiling enabled (interval={1}ms)", LogPrefix, ArchimedesPerf.FlushIntervalMs);
+                        return TextCommandResult.Success($"Profiling enabled (interval={ArchimedesPerf.FlushIntervalMs}ms).");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("off")
+                    .WithDescription("Disable profiling logs.")
+                    .HandleWith(_ =>
+                    {
+                        ArchimedesPerf.SetEnabled(false);
+                        api.Logger.Notification("{0} Profiling disabled", LogPrefix);
+                        return TextCommandResult.Success("Profiling disabled.");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("flush")
+                    .WithDescription("Immediately flush current profiling aggregates to the server log.")
+                    .HandleWith(_ =>
+                    {
+                        if (!ArchimedesPerf.IsEnabled)
+                        {
+                            return TextCommandResult.Success("Profiling is disabled.");
+                        }
+
+                        ArchimedesPerf.FlushNow(api);
+                        return TextCommandResult.Success("Profiling stats flushed to server log.");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("status")
+                    .WithDescription("Show profiler status and current interval.")
+                    .HandleWith(_ =>
+                    {
+                        string state = ArchimedesPerf.IsEnabled ? "enabled" : "disabled";
+                        return TextCommandResult.Success($"Profiling is {state} (interval={ArchimedesPerf.FlushIntervalMs}ms).");
+                    })
+                .EndSubCommand()
             .EndSubCommand();
     }
 
