@@ -13,8 +13,10 @@
     "relayStrideBlocks": 7,
     "maxRelayPromotionsPerTick": 1,
     "maxRelaySourcesPerController": 8,
-    "requiredMechPowerForMaxRelay": 0.02,
+    "requiredMechPowerForMaxRelay": 0.5,
     "relayPowerHysteresisPct": 0.05,
-    "debugControllerStatsOnInteract": false
+    "debugControllerStatsOnInteract": false,
+    "enableWaterfallCompat": true,
+    "waterfallCompatDebug": false
   }
 }

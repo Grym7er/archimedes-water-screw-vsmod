@@ -19,7 +19,9 @@
     "boolean": {
       "archimedes_screw:config/settings.json": {
         "water/enableRelaySources": "ENABLE_RELAY_SOURCES",
-        "water/debugControllerStatsOnInteract": "DEBUG_CONTROLLER_STATS_ON_INTERACT"
+        "water/debugControllerStatsOnInteract": "DEBUG_CONTROLLER_STATS_ON_INTERACT",
+        "water/enableWaterfallCompat": "ENABLE_WATERFALL_COMPAT",
+        "water/waterfallCompatDebug": "WATERFALL_COMPAT_DEBUG"
       }
     },
     "float": {
@@ -178,6 +180,20 @@
         "ingui": "archimedes_screw:config-debug-controller-stats-on-interact",
         "weight": 5.9,
         "comment": "If enabled, right-clicking an intake controller logs detailed controller stats to server console.",
+        "default": false
+      },
+      "ENABLE_WATERFALL_COMPAT": {
+        "name": "enable-waterfall-compat",
+        "ingui": "archimedes_screw:config-enable-waterfall-compat",
+        "weight": 6.0,
+        "comment": "Enable compatibility hook for the Waterfall mod when installed.",
+        "default": true
+      },
+      "WATERFALL_COMPAT_DEBUG": {
+        "name": "waterfall-compat-debug",
+        "ingui": "archimedes_screw:config-waterfall-compat-debug",
+        "weight": 6.1,
+        "comment": "Verbose logging for Waterfall compatibility hook decisions.",
         "default": false
       }
     },

@@ -41,3 +41,15 @@ Use one powered intake/outlet stack and one long, mostly horizontal aqueduct lin
 | **R5** | Force over-cap condition by reducing `maxRelaySourcesPerController` below current relay count. | Relays are trimmed down to cap over subsequent ticks; seed source remains intact. |
 | **R6** | Disable controller power or invalidate assembly, then re-enable. | Relay-owned sources drain/cleanup when invalid, and can be recreated when valid again; no orphan relay ownership remains. |
 | **R7** | Two nearby active controllers with connected managed water; trigger relay opportunities near boundary. | A relay source is never captured by the wrong owner once owned; no cross-controller thrash. |
+
+## Waterfall compatibility checks
+
+| ID | What to do | What you should see |
+|----|------------|---------------------|
+| **W1** | Run server **without** Waterfall mod installed. Start world and inspect logs. | One compat log indicating Waterfall not installed / compat inactive. No errors; normal behavior unchanged. |
+| **W2** | Install Waterfall and start world with `enableWaterfallCompat=true`. | Startup log confirms Waterfall compat patch active and target method resolved. |
+| **W3** | With Waterfall installed, spill liquid from a container at/near Archimedes managed water (including flowing/relay sections). | No hard conflict (no duplicate wipe or invalid overwrite); spill behavior remains stable around managed water. |
+| **W4** | Spill the same container in a vanilla-only area (no Archimedes managed water nearby). | Waterfall behaves as normal (compat should no-op). |
+| **W5** | Toggle `enableWaterfallCompat` in Config Lib but do not press Save. Then test W3. | Behavior remains as before (save-only apply model). |
+| **W6** | Press Save in Config Lib after toggling `enableWaterfallCompat` and re-test W3. | Behavior changes only after Save; logs show pending settings applied on save. |
+| **W7** | Enable `waterfallCompatDebug=true`, Save, then repeat W3 and W4. | Debug logs appear only when spill context touches Archimedes managed water; no debug spam for unrelated spills. |

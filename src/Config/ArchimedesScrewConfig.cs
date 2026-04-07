@@ -75,6 +75,16 @@ public sealed class ArchimedesScrewConfig
         public bool DebugControllerStatsOnInteract { get; set; } = false;
 
         /// <summary>
+        /// Enables optional compatibility hooks for the Waterfall mod when installed.
+        /// </summary>
+        public bool EnableWaterfallCompat { get; set; } = true;
+
+        /// <summary>
+        /// Emits verbose logging for Waterfall compatibility hook decisions.
+        /// </summary>
+        public bool WaterfallCompatDebug { get; set; } = false;
+
+        /// <summary>
         /// Copies tunable fields onto this instance so existing references (e.g. block entities) stay valid.
         /// </summary>
         public void CopyValuesFrom(WaterConfig source)
@@ -95,6 +105,8 @@ public sealed class ArchimedesScrewConfig
             RequiredMechPowerForMaxRelay = source.RequiredMechPowerForMaxRelay;
             RelayPowerHysteresisPct = source.RelayPowerHysteresisPct;
             DebugControllerStatsOnInteract = source.DebugControllerStatsOnInteract;
+            EnableWaterfallCompat = source.EnableWaterfallCompat;
+            WaterfallCompatDebug = source.WaterfallCompatDebug;
         }
     }
 }

@@ -29,6 +29,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     private EventBusListenerDelegate? configLibSettingChangedHandler;
     private ArchimedesScrewConfig.WaterConfig? pendingWaterConfig;
     private bool pendingRequiresCentralTickRestart;
+    private WaterfallCompatBridge? waterfallCompatBridge;
 
     public ArchimedesScrewConfig Config { get; private set; } = new();
 
@@ -82,7 +83,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     {
         ArchimedesScrewConfig.WaterConfig w = config.Water;
         api.Logger.Notification(
-            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, enableRelaySources={10}, relayStrideBlocks={11}, maxRelayPromotionsPerTick={12}, maxRelaySourcesPerController={13}, requiredMechPowerForMaxRelay={14}, relayPowerHysteresisPct={15}, debugControllerStatsOnInteract={16}",
+            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, enableRelaySources={10}, relayStrideBlocks={11}, maxRelayPromotionsPerTick={12}, maxRelaySourcesPerController={13}, requiredMechPowerForMaxRelay={14}, relayPowerHysteresisPct={15}, debugControllerStatsOnInteract={16}, enableWaterfallCompat={17}, waterfallCompatDebug={18}",
             LogPrefix,
             w.FastTickMs,
             w.IdleTickMs,
@@ -99,7 +100,9 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             w.MaxRelaySourcesPerController,
             w.RequiredMechPowerForMaxRelay,
             w.RelayPowerHysteresisPct,
-            w.DebugControllerStatsOnInteract
+            w.DebugControllerStatsOnInteract,
+            w.EnableWaterfallCompat,
+            w.WaterfallCompatDebug
         );
     }
 
@@ -109,6 +112,8 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
         WaterManager = new ArchimedesWaterNetworkManager(api, Config);
         WaterManager.StartCentralWaterTick();
+        waterfallCompatBridge = new WaterfallCompatBridge(api);
+        waterfallCompatBridge.RefreshForConfig(Config.Water);
         api.Logger.Notification("{0} Server side initialized (central water tick)", LogPrefix);
 
         api.Event.SaveGameLoaded += OnSaveGameLoaded;
@@ -132,6 +137,8 @@ public sealed class ArchimedesScrewModSystem : ModSystem
         }
 
         WaterManager?.Dispose();
+        waterfallCompatBridge?.Dispose();
+        waterfallCompatBridge = null;
         WaterManager = null;
         base.Dispose();
     }
@@ -141,6 +148,15 @@ public sealed class ArchimedesScrewModSystem : ModSystem
         sapi?.Logger.Notification("{0} Save game loaded, restoring water manager state", LogPrefix);
         WaterManager?.Load();
         WaterManager?.BeginPostLoadReactivation();
+        if (sapi != null)
+        {
+            // Retry compat resolution after world/mod systems are fully active.
+            for (int i = 1; i <= 6; i++)
+            {
+                int delayMs = 250 * i;
+                sapi.Event.RegisterCallback(_ => waterfallCompatBridge?.RefreshForConfig(Config.Water), delayMs);
+            }
+        }
     }
 
     private void OnGameWorldSave()
@@ -248,6 +264,8 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             pendingRequiresCentralTickRestart = false;
         }
 
+        waterfallCompatBridge?.RefreshForConfig(Config.Water);
+
         sapi.Logger.Notification("{0} Applied pending Config Lib settings on save", LogPrefix);
         LogEffectiveConfig(sapi, Config);
     }
@@ -341,6 +359,12 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 return true;
             case "DEBUG_CONTROLLER_STATS_ON_INTERACT":
                 target.DebugControllerStatsOnInteract = tree.GetBool("value");
+                return true;
+            case "ENABLE_WATERFALL_COMPAT":
+                target.EnableWaterfallCompat = tree.GetBool("value");
+                return true;
+            case "WATERFALL_COMPAT_DEBUG":
+                target.WaterfallCompatDebug = tree.GetBool("value");
                 return true;
             default:
                 return false;
