@@ -399,8 +399,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     public bool IsArchimedesSourceBlock(Block block)
     {
         return IsArchimedesWaterBlock(block) &&
-               string.Equals(block.Variant?["flow"], "still", StringComparison.Ordinal) &&
-               string.Equals(block.Variant?["height"], "7", StringComparison.Ordinal);
+               IsSourceHeight(block.Variant?["height"]);
     }
 
     public bool IsArchimedesLowestFlowingBlock(Block block)
@@ -413,6 +412,63 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     public bool TryGetSourceOwner(BlockPos pos, out string ownerId)
     {
         return sourceOwnerByPos.TryGetValue(PosKey(pos), out ownerId!);
+    }
+
+    public IReadOnlyList<ManagedSourceDebugInfo> CollectManagedSourceDebug(BlockPos center, int radius)
+    {
+        int clampedRadius = Math.Clamp(radius, 1, 128);
+        var result = new List<ManagedSourceDebugInfo>();
+
+        int minX = center.X - clampedRadius;
+        int maxX = center.X + clampedRadius;
+        int minY = center.Y - clampedRadius;
+        int maxY = center.Y + clampedRadius;
+        int minZ = center.Z - clampedRadius;
+        int maxZ = center.Z + clampedRadius;
+
+        for (int x = minX; x <= maxX; x++)
+        {
+            for (int y = minY; y <= maxY; y++)
+            {
+                for (int z = minZ; z <= maxZ; z++)
+                {
+                    BlockPos pos = new(x, y, z);
+                    Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+                    if (!IsArchimedesSelfSustainingSourceBlock(fluid))
+                    {
+                        continue;
+                    }
+
+                    string key = PosKey(pos);
+                    bool isOwned = sourceOwnerByPos.TryGetValue(key, out string? ownerId);
+                    bool ownerSnapshotContainsPos = false;
+                    bool ownerControllerLoaded = false;
+                    bool ownerLoadedControllerTracksPos = false;
+                    if (isOwned && ownerId != null)
+                    {
+                        ownerSnapshotContainsPos = ControllerSnapshotContainsPos(ownerId, key);
+                        ownerControllerLoaded = loadedControllers.TryGetValue(ownerId, out WeakReference<BlockEntityWaterArchimedesScrew>? wr) &&
+                                                wr.TryGetTarget(out _);
+                        ownerLoadedControllerTracksPos = IsLoadedControllerTrackingPos(ownerId, pos);
+                    }
+
+                    bool isOwnershipConsistent = isOwned &&
+                                                 ownerSnapshotContainsPos &&
+                                                 (!ownerControllerLoaded || ownerLoadedControllerTracksPos);
+                    result.Add(new ManagedSourceDebugInfo(
+                        pos.Copy(),
+                        isOwned,
+                        ownerId ?? string.Empty,
+                        isOwnershipConsistent,
+                        ownerSnapshotContainsPos,
+                        ownerControllerLoaded,
+                        ownerLoadedControllerTracksPos
+                    ));
+                }
+            }
+        }
+
+        return result;
     }
 
     public bool TryResolveVanillaWaterFamily(Block block, out string familyId)
@@ -636,6 +692,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         }
 
         AddOwnedPosToSnapshot(ownerId, pos);
+        NotifyControllerSourceAssigned(ownerId, pos, "ensure source owned");
 
         Block currentFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsArchimedesSourceBlock(currentFluid) ||
@@ -647,6 +704,36 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         }
 
         return changed;
+    }
+
+    public IReadOnlyList<BlockPos> GetOwnedSourcePositionsForController(string controllerId)
+    {
+        HashSet<string> keys = new(StringComparer.Ordinal);
+        List<BlockPos> result = new();
+
+        if (controllerOwnedById.TryGetValue(controllerId, out int[]? encoded))
+        {
+            foreach (BlockPos pos in DecodePositions(encoded))
+            {
+                string key = PosKey(pos);
+                if (keys.Add(key))
+                {
+                    result.Add(pos.Copy());
+                }
+            }
+        }
+
+        foreach ((string key, string ownerId) in sourceOwnerByPos)
+        {
+            if (!string.Equals(ownerId, controllerId, StringComparison.Ordinal) || !keys.Add(key))
+            {
+                continue;
+            }
+
+            result.Add(ParsePosKey(key));
+        }
+
+        return result;
     }
 
     public bool EnsureSourceOwnership(string ownerId, BlockPos pos)
@@ -694,7 +781,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         RemoveFluidAndNotifyNeighbours(pos);
     }
 
-    public int ConvertAdjacentVanillaSources(BlockPos startPos)
+    public int ConvertAdjacentVanillaSources(BlockPos startPos, string? ownerHintControllerId = null)
     {
         int converted = 0;
         HashSet<string> convertedKeys = new(StringComparer.Ordinal);
@@ -716,8 +803,15 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
                     continue;
                 }
 
-                if (!TryConvertVanillaSource(adjacentPos, familyId))
+                if (!TryConvertVanillaSource(adjacentPos, familyId, ownerHintControllerId))
                 {
+                    // A self-sustaining managed source (height 6/7) can appear via fluid simulation
+                    // without passing through our vanilla-conversion path. Adopt ownership
+                    // here so it does not remain unmanaged.
+                    if (TryAdoptManagedSelfSustainingSource(adjacentPos, familyId, ownerHintControllerId))
+                    {
+                        converted++;
+                    }
                     continue;
                 }
 
@@ -733,13 +827,13 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     /// growing managed-water component, or <paramref name="maxPasses"/> is reached. A single pass only converts
     /// neighbours of the current BFS set, so a chain of bucket-placed sources needs multiple passes.
     /// </summary>
-    public int ConvertAdjacentVanillaSourcesIteratively(BlockPos startPos, int maxPasses)
+    public int ConvertAdjacentVanillaSourcesIteratively(BlockPos startPos, int maxPasses, string? ownerHintControllerId = null)
     {
         int capped = Math.Clamp(maxPasses, 1, 256);
         int total = 0;
         for (int pass = 0; pass < capped; pass++)
         {
-            int batch = ConvertAdjacentVanillaSources(startPos);
+            int batch = ConvertAdjacentVanillaSources(startPos, ownerHintControllerId);
             if (batch == 0)
             {
                 break;
@@ -751,15 +845,44 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return total;
     }
 
-    public bool TryConvertVanillaSource(BlockPos pos, string familyId)
+    public bool TryConvertVanillaSource(BlockPos pos, string familyId, string? ownerHintControllerId = null)
     {
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        if (!IsVanillaSourceBlock(fluidBlock))
+        if (!IsVanillaSelfSustainingSourceForFamily(fluidBlock, familyId))
         {
             return false;
         }
 
-        SetManagedSource(pos, familyId);
+        if (!HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(pos, familyId))
+        {
+            return false;
+        }
+
+        // Convert first without neighbour reactions so ownership can be established
+        // before the source can immediately collapse into flowing water.
+        SetManagedWaterVariant(pos, familyId, "still", 7, triggerUpdates: false);
+
+        bool assigned = false;
+        if (!string.IsNullOrWhiteSpace(ownerHintControllerId))
+        {
+            assigned = EnsureSourceOwned(ownerHintControllerId, pos, familyId);
+        }
+
+        if (!assigned)
+        {
+            assigned = AssignNearestActiveControllerForNewSource(
+                pos,
+                familyId,
+                reason: "controller-converted source"
+            );
+        }
+
+        Block placed = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (placed.Id != 0)
+        {
+            TriggerLiquidUpdates(pos, placed);
+        }
+
         return true;
     }
 
@@ -1008,8 +1131,95 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     {
         return block.IsLiquid() &&
                ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _) &&
-               string.Equals(block.Variant?["flow"], "still", StringComparison.Ordinal) &&
-               string.Equals(block.Variant?["height"], "7", StringComparison.Ordinal);
+               IsSourceHeight(block.Variant?["height"]);
+    }
+
+    private bool IsVanillaSelfSustainingSourceForFamily(Block block, string familyId)
+    {
+        if (!block.IsLiquid() ||
+            !TryResolveVanillaWaterFamily(block, out string vanillaFamilyId) ||
+            !string.Equals(vanillaFamilyId, familyId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return IsSourceHeight(block.Variant?["height"]);
+    }
+
+    private bool IsArchimedesSelfSustainingSourceBlock(Block block)
+    {
+        return IsArchimedesWaterBlock(block) &&
+               IsSourceHeight(block.Variant?["height"]);
+    }
+
+    private static bool IsSourceHeight(string? heightText)
+    {
+        return string.Equals(heightText, "6", StringComparison.Ordinal) ||
+               string.Equals(heightText, "7", StringComparison.Ordinal);
+    }
+
+    private bool IsManagedSelfSustainingSourceForFamily(Block block, string familyId)
+    {
+        return IsArchimedesSelfSustainingSourceBlock(block) &&
+               TryResolveManagedWaterFamily(block, out string managedFamilyId) &&
+               string.Equals(managedFamilyId, familyId, StringComparison.Ordinal);
+    }
+
+    private bool HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(BlockPos pos, string familyId)
+    {
+        int ownedMatches = 0;
+        foreach (BlockFacing face in BlockFacing.HORIZONTALS)
+        {
+            BlockPos adjacentPos = pos.AddCopy(face);
+            Block adjacentFluid = api.World.BlockAccessor.GetBlock(adjacentPos, BlockLayersAccess.Fluid);
+            if (!IsArchimedesSelfSustainingSourceBlock(adjacentFluid) ||
+                !TryResolveManagedWaterFamily(adjacentFluid, out string managedFamilyId) ||
+                !string.Equals(managedFamilyId, familyId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!sourceOwnerByPos.ContainsKey(PosKey(adjacentPos)))
+            {
+                continue;
+            }
+
+            ownedMatches++;
+            if (ownedMatches >= 2)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryAdoptManagedSelfSustainingSource(BlockPos pos, string familyId, string? ownerHintControllerId)
+    {
+        Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (!IsManagedSelfSustainingSourceForFamily(fluidBlock, familyId) ||
+            sourceOwnerByPos.ContainsKey(PosKey(pos)) ||
+            !HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(pos, familyId))
+        {
+            return false;
+        }
+
+        bool assigned = false;
+        if (!string.IsNullOrWhiteSpace(ownerHintControllerId))
+        {
+            assigned = EnsureSourceOwned(ownerHintControllerId, pos, familyId);
+        }
+
+        if (!assigned)
+        {
+            assigned = AssignNearestActiveControllerForNewSource(
+                pos,
+                familyId,
+                reason: "managed-self-sustaining ownership adoption"
+            );
+        }
+
+        return assigned;
     }
 
     private void RemoveOrphanedManagedSource(BlockPos pos, string key)
@@ -1364,4 +1574,43 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         HashSet<string> Visited,
         Dictionary<string, BlockPos> PositionsByKey
     );
+
+    private bool ControllerSnapshotContainsPos(string controllerId, string key)
+    {
+        if (!controllerOwnedById.TryGetValue(controllerId, out int[]? encoded))
+        {
+            return false;
+        }
+
+        foreach (BlockPos pos in DecodePositions(encoded))
+        {
+            if (string.Equals(PosKey(pos), key, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsLoadedControllerTrackingPos(string controllerId, BlockPos pos)
+    {
+        if (!loadedControllers.TryGetValue(controllerId, out WeakReference<BlockEntityWaterArchimedesScrew>? wr) ||
+            !wr.TryGetTarget(out BlockEntityWaterArchimedesScrew? controller))
+        {
+            return false;
+        }
+
+        return controller.IsTrackingSource(pos);
+    }
 }
+
+public readonly record struct ManagedSourceDebugInfo(
+    BlockPos Pos,
+    bool IsOwned,
+    string OwnerId,
+    bool IsOwnershipConsistent,
+    bool OwnerSnapshotContainsPos,
+    bool OwnerControllerLoaded,
+    bool OwnerLoadedControllerTracksPos
+);

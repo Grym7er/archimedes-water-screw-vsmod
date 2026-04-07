@@ -223,6 +223,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         Log("Assigned source at {0} ({1})", pos, reason);
     }
 
+    internal bool IsTrackingSource(BlockPos pos)
+    {
+        return ownedPositions.ContainsKey(ArchimedesWaterNetworkManager.PosKey(pos));
+    }
+
     public void ClearOwnedStateAfterPurge()
     {
         ownedPositions.Clear();
@@ -245,15 +250,33 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        if (ownedPositions.Count == 0)
+        HashSet<string> releaseKeys = new(StringComparer.Ordinal);
+        List<BlockPos> releaseList = new();
+        foreach (BlockPos ownedPos in ownedPositions.Values)
+        {
+            if (releaseKeys.Add(ArchimedesWaterNetworkManager.PosKey(ownedPos)))
+            {
+                releaseList.Add(ownedPos.Copy());
+            }
+        }
+
+        foreach (BlockPos ownedPos in waterManager.GetOwnedSourcePositionsForController(ControllerId))
+        {
+            if (releaseKeys.Add(ArchimedesWaterNetworkManager.PosKey(ownedPos)))
+            {
+                releaseList.Add(ownedPos.Copy());
+            }
+        }
+
+        if (releaseList.Count == 0)
         {
             waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
             Log("Release requested for reason '{0}', but no Archimedes sources were owned", reason);
             return;
         }
 
-        int count = ownedPositions.Count;
-        foreach (BlockPos ownedPos in ownedPositions.Values.ToArray())
+        int count = releaseList.Count;
+        foreach (BlockPos ownedPos in releaseList)
         {
             waterManager.ReleaseSourceOwner(ControllerId, ownedPos);
         }
@@ -393,7 +416,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         bool ensuredSeed = EnsureSeedSource(seedPos, familyId);
         int convertedVanilla = waterManager.ConvertAdjacentVanillaSourcesIteratively(
             seedPos,
-            waterConfig.MaxVanillaConversionPasses
+            waterConfig.MaxVanillaConversionPasses,
+            ControllerId
         );
 
         bool canSkipConnectivityScan =
@@ -422,7 +446,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             if (IsRelayCreationDue())
             {
                 relayCreated = CreateRelaySources(seedPos, familyId, connectedWaterKeys, connectedWater, relayCap, relayWorkBudget);
-                ScheduleNextRelayCreationTick(idleMs);
+                ScheduleNextRelayCreationTick(fastMs);
             }
             relayTrimmed = TrimRelaySourcesToCap(seedPos, relayCap, relayWorkBudget);
         }
@@ -764,9 +788,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return Environment.TickCount64 >= nextRelayCreationDueMs;
     }
 
-    private void ScheduleNextRelayCreationTick(int idleMs)
+    private void ScheduleNextRelayCreationTick(int intervalMs)
     {
-        nextRelayCreationDueMs = Environment.TickCount64 + Math.Max(1, idleMs);
+        nextRelayCreationDueMs = Environment.TickCount64 + Math.Max(1, intervalMs);
     }
 
     private bool IsRelayFarEnoughFromOwnedRelays(BlockPos candidatePos, int minManhattanDistance)
@@ -823,7 +847,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private int DrainUnsupportedSources(IReadOnlyCollection<ArchimedesOutletState> referenceSeeds, HashSet<string> supportedKeySet, string reason)
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("controller.drainUnsupported");
-        if (waterManager == null || waterConfig == null)
+        if (Api == null || waterManager == null || waterConfig == null)
         {
             return 0;
         }
@@ -855,7 +879,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         int perTick = Math.Max(1, waterConfig.MaxBlocksPerStep);
-        toRelease.Sort((left, right) =>
+        List<BlockPos> unstableCandidates = new();
+        foreach (BlockPos pos in toRelease)
+        {
+            if (CountManagedSourceHeightCardinalNeighbors(pos) < 3)
+            {
+                unstableCandidates.Add(pos);
+            }
+        }
+
+        List<BlockPos> releaseCandidates = unstableCandidates.Count > 0 ? unstableCandidates : toRelease;
+        releaseCandidates.Sort((left, right) =>
         {
             int distCmp = MinDistanceSquared(right, origins).CompareTo(MinDistanceSquared(left, origins));
             if (distCmp != 0)
@@ -865,12 +899,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
             return right.Y.CompareTo(left.Y);
         });
-        int releaseCount = Math.Min(perTick, toRelease.Count);
+        int releaseCount = Math.Min(perTick, releaseCandidates.Count);
         ArchimedesPerf.AddCount("controller.drainUnsupported.releaseCount", releaseCount);
+        ArchimedesPerf.AddCount("controller.drainUnsupported.unstableCandidates", unstableCandidates.Count);
+        if (unstableCandidates.Count == 0)
+        {
+            ArchimedesPerf.AddCount("controller.drainUnsupported.fallbackNoUnstable");
+        }
 
         for (int i = 0; i < releaseCount; i++)
         {
-            BlockPos pos = toRelease[i];
+            BlockPos pos = releaseCandidates[i];
             ownedPositions.Remove(ArchimedesWaterNetworkManager.PosKey(pos));
             waterManager.ReleaseSourceOwner(ControllerId, pos);
         }
@@ -885,6 +924,32 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         );
 
         return releaseCount;
+    }
+
+    private int CountManagedSourceHeightCardinalNeighbors(BlockPos pos)
+    {
+        if (Api == null || waterManager == null)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        foreach (BlockFacing face in BlockFacing.HORIZONTALS)
+        {
+            Block fluid = Api.World.BlockAccessor.GetBlock(pos.AddCopy(face), BlockLayersAccess.Fluid);
+            if (!waterManager.IsArchimedesWaterBlock(fluid))
+            {
+                continue;
+            }
+
+            if (string.Equals(fluid.Variant?["height"], "6", StringComparison.Ordinal) ||
+                string.Equals(fluid.Variant?["height"], "7", StringComparison.Ordinal))
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     private void UpdateSnapshot()

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json;
+using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
@@ -24,12 +27,21 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     public static string ConfigLibReloadEventName => "configlib:config-reload";
 
     private ICoreAPI? api;
+    private ICoreClientAPI? capi;
     private ICoreServerAPI? sapi;
+    private IServerNetworkChannel? serverChannel;
+    private IClientNetworkChannel? clientChannel;
     private EventBusListenerDelegate? configLibConfigSavedHandler;
     private EventBusListenerDelegate? configLibSettingChangedHandler;
     private ArchimedesScrewConfig.WaterConfig? pendingWaterConfig;
     private bool pendingRequiresCentralTickRestart;
     private WaterfallCompatBridge? waterfallCompatBridge;
+    private ArchimedesWaterDebugOverlay? waterDebugOverlay;
+    private long waterDebugTickListenerId;
+    private bool waterDebugEnabled;
+
+    private const string NetworkChannelName = ModId;
+    private const int WaterDebugRadius = 32;
 
     public ArchimedesScrewConfig Config { get; private set; } = new();
 
@@ -109,6 +121,9 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     public override void StartServerSide(ICoreServerAPI api)
     {
         sapi = api;
+        serverChannel = api.Network
+            .RegisterChannel(NetworkChannelName)
+            .RegisterMessageType<ArchimedesWaterDebugSnapshotPacket>();
 
         WaterManager = new ArchimedesWaterNetworkManager(api, Config);
         WaterManager.StartCentralWaterTick();
@@ -128,6 +143,19 @@ public sealed class ArchimedesScrewModSystem : ModSystem
         RegisterCommands(api);
     }
 
+    public override void StartClientSide(ICoreClientAPI api)
+    {
+        capi = api;
+        waterDebugOverlay = new ArchimedesWaterDebugOverlay(api);
+        clientChannel = api.Network
+            .RegisterChannel(NetworkChannelName)
+            .RegisterMessageType<ArchimedesWaterDebugSnapshotPacket>();
+        clientChannel.SetMessageHandler<ArchimedesWaterDebugSnapshotPacket>(packet =>
+        {
+            waterDebugOverlay?.ApplySnapshot(packet);
+        });
+    }
+
     public override void Dispose()
     {
         if (sapi != null)
@@ -138,6 +166,11 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
         WaterManager?.Dispose();
         waterfallCompatBridge?.Dispose();
+        if (sapi != null && waterDebugTickListenerId != 0)
+        {
+            sapi.Event.UnregisterGameTickListener(waterDebugTickListenerId);
+            waterDebugTickListenerId = 0;
+        }
         waterfallCompatBridge = null;
         WaterManager = null;
         base.Dispose();
@@ -239,7 +272,139 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                         return TextCommandResult.Success($"Profiling is {state} (interval={ArchimedesPerf.FlushIntervalMs}ms).");
                     })
                 .EndSubCommand()
+            .EndSubCommand()
+            .BeginSubCommand("debugwater")
+                .WithDescription("Visualize managed source ownership (green=consistent owned, orange=owned inconsistent, red=unowned).")
+                .BeginSubCommand("on")
+                    .WithDescription("Enable periodic water ownership overlay for all connected clients.")
+                    .HandleWith(_ =>
+                    {
+                        waterDebugEnabled = true;
+                        EnsureWaterDebugTickListener(api);
+                        SendWaterDebugSnapshotToAllPlayers();
+                        return TextCommandResult.Success("Water debug overlay enabled (green=consistent owned, orange=owned inconsistent, red=unowned).");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("off")
+                    .WithDescription("Disable ownership overlay and clear highlights.")
+                    .HandleWith(_ =>
+                    {
+                        waterDebugEnabled = false;
+                        if (waterDebugTickListenerId != 0)
+                        {
+                            api.Event.UnregisterGameTickListener(waterDebugTickListenerId);
+                            waterDebugTickListenerId = 0;
+                        }
+
+                        if (sapi != null && serverChannel != null)
+                        {
+                            var clearPacket = new ArchimedesWaterDebugSnapshotPacket { Enabled = false };
+                            foreach (IPlayer onlinePlayer in sapi.World.AllOnlinePlayers)
+                            {
+                                if (onlinePlayer is IServerPlayer serverPlayer)
+                                {
+                                    serverChannel.SendPacket(clearPacket, serverPlayer);
+                                }
+                            }
+                        }
+                        return TextCommandResult.Success("Water debug overlay disabled.");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("scan")
+                    .WithDescription("Print nearby managed sources and ownership in chat.")
+                    .HandleWith(args =>
+                    {
+                        if (WaterManager == null || args.Caller.Player is not IServerPlayer player)
+                        {
+                            return TextCommandResult.Success("No active water manager or player context.");
+                        }
+
+                        IReadOnlyList<ManagedSourceDebugInfo> sources =
+                            WaterManager.CollectManagedSourceDebug(player.Entity.Pos.AsBlockPos, WaterDebugRadius);
+                        int owned = sources.Count(s => s.IsOwned);
+                        int unowned = sources.Count - owned;
+                        int inconsistentOwned = sources.Count(s => s.IsOwned && !s.IsOwnershipConsistent);
+                        player.SendMessage(
+                            GlobalConstants.InfoLogChatGroup,
+                            $"Managed sources nearby (r={WaterDebugRadius}): total={sources.Count}, owned={owned}, ownedInconsistent={inconsistentOwned}, unowned={unowned}",
+                            EnumChatType.Notification
+                        );
+
+                        foreach (ManagedSourceDebugInfo source in sources.Take(24))
+                        {
+                            string state = source.IsOwned
+                                ? (source.IsOwnershipConsistent
+                                    ? $"owned by {source.OwnerId} (consistent)"
+                                    : $"owned by {source.OwnerId} (INCONSISTENT snapshot={source.OwnerSnapshotContainsPos}, loaded={source.OwnerControllerLoaded}, beTracks={source.OwnerLoadedControllerTracksPos})")
+                                : "UNOWNED";
+                            player.SendMessage(
+                                GlobalConstants.InfoLogChatGroup,
+                                $"{source.Pos}: {state}",
+                                EnumChatType.Notification
+                            );
+                        }
+
+                        if (sources.Count > 24)
+                        {
+                            player.SendMessage(
+                                GlobalConstants.InfoLogChatGroup,
+                                $"...and {sources.Count - 24} more.",
+                                EnumChatType.Notification
+                            );
+                        }
+
+                        return TextCommandResult.Success("Water ownership scan complete.");
+                    })
+                .EndSubCommand()
             .EndSubCommand();
+    }
+
+    private void EnsureWaterDebugTickListener(ICoreServerAPI api)
+    {
+        if (waterDebugTickListenerId != 0)
+        {
+            return;
+        }
+
+        waterDebugTickListenerId = api.Event.RegisterGameTickListener(_ => SendWaterDebugSnapshotToAllPlayers(), 500);
+    }
+
+    private void SendWaterDebugSnapshotToAllPlayers()
+    {
+        if (!waterDebugEnabled || sapi == null || WaterManager == null || serverChannel == null)
+        {
+            return;
+        }
+
+        foreach (IPlayer onlinePlayer in sapi.World.AllOnlinePlayers)
+        {
+            if (onlinePlayer is not IServerPlayer serverPlayer || serverPlayer.Entity == null)
+            {
+                continue;
+            }
+
+            IReadOnlyList<ManagedSourceDebugInfo> sources =
+                WaterManager.CollectManagedSourceDebug(serverPlayer.Entity.Pos.AsBlockPos, WaterDebugRadius);
+            var packet = new ArchimedesWaterDebugSnapshotPacket
+            {
+                Enabled = true
+            };
+
+            foreach (ManagedSourceDebugInfo source in sources)
+            {
+                packet.Sources.Add(new ArchimedesWaterDebugSourcePacket
+                {
+                    X = source.Pos.X,
+                    Y = source.Pos.Y,
+                    Z = source.Pos.Z,
+                    IsOwned = source.IsOwned,
+                    OwnerId = source.OwnerId,
+                    IsOwnershipConsistent = source.IsOwnershipConsistent
+                });
+            }
+
+            serverChannel.SendPacket(packet, serverPlayer);
+        }
     }
 
     private void OnConfigLibConfigSaved(string eventName, ref EnumHandling handling, IAttribute data)
