@@ -38,5 +38,21 @@ public sealed class ArchimedesScrewConfig
         /// Max rounds of vanilla-source conversion per controller tick (each round expands the managed-water BFS).
         /// </summary>
         public int MaxVanillaConversionPasses { get; set; } = 32;
+
+        /// <summary>
+        /// Copies tunable fields onto this instance so existing references (e.g. block entities) stay valid.
+        /// </summary>
+        public void CopyValuesFrom(WaterConfig source)
+        {
+            FastTickMs = source.FastTickMs;
+            IdleTickMs = source.IdleTickMs;
+            GlobalTickMs = source.GlobalTickMs;
+            MaxControllersPerGlobalTick = source.MaxControllersPerGlobalTick;
+            AssemblyAnalysisCacheMs = source.AssemblyAnalysisCacheMs;
+            MaxBlocksPerStep = source.MaxBlocksPerStep;
+            MaxScrewLength = source.MaxScrewLength;
+            MinimumNetworkSpeed = source.MinimumNetworkSpeed;
+            MaxVanillaConversionPasses = source.MaxVanillaConversionPasses;
+        }
     }
 }

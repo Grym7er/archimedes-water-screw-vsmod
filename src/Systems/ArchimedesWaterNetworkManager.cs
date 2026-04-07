@@ -56,6 +56,12 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         globalWaterTickListenerId = api.Event.RegisterGameTickListener(OnGlobalWaterTick, interval);
     }
 
+    /// <summary>Call after <see cref="ArchimedesScrewConfig.Water"/> fields change (e.g. Config Lib live reload).</summary>
+    public void RestartCentralWaterTickForCurrentConfig()
+    {
+        StartCentralWaterTick();
+    }
+
     public void StopCentralWaterTick()
     {
         if (globalWaterTickListenerId != 0)
