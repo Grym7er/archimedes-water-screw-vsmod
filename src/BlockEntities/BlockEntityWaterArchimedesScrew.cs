@@ -52,6 +52,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private bool? lastLoggedControllerState;
     private bool? lastLoggedPowerState;
     private string? lastLoggedSeedKey;
+    private long nextTruncationPauseLogAtMs;
 
     public string ControllerId { get; private set; } = Guid.NewGuid().ToString("N");
 
@@ -315,6 +316,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (releaseList.Count == 0)
         {
             waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
+            CleanupUnownedManagedSourcesForControllerState();
             Log("Release requested for reason '{0}', but no Archimedes sources were owned", reason);
             return;
         }
@@ -328,6 +330,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ownedPositions.Clear();
         relayOwnedPositions.Clear();
         waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
+        CleanupUnownedManagedSourcesForControllerState();
         MarkDirty();
         Log("Released {0} Archimedes source blocks because {1}", count, reason);
     }
@@ -427,9 +430,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 Array.Empty<ArchimedesOutletState>(),
                 EmptyKeySet,
                 evaluation.FailureReason);
+            int orphanRemoved = CleanupUnownedManagedSourcesForControllerState();
             ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
                 ? ArchimedesScrewControllerSchedule.HighCadence
                 : ArchimedesScrewControllerSchedule.LowCadence;
+            if (orphanRemoved > 0)
+            {
+                schedule = ArchimedesScrewControllerSchedule.HighCadence;
+            }
             ScheduleNextWaterTick(schedule, fastMs, idleMs);
             return;
         }
@@ -442,9 +450,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 Array.Empty<ArchimedesOutletState>(),
                 EmptyKeySet,
                 evaluation.FailureReason);
+            int orphanRemoved = CleanupUnownedManagedSourcesForControllerState();
             ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
                 ? ArchimedesScrewControllerSchedule.HighCadence
                 : ArchimedesScrewControllerSchedule.LowCadence;
+            if (orphanRemoved > 0)
+            {
+                schedule = ArchimedesScrewControllerSchedule.HighCadence;
+            }
             ScheduleNextWaterTick(schedule, fastMs, idleMs);
             return;
         }
@@ -461,11 +474,15 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         lastSeedPos = seedPos.Copy();
 
         bool ensuredSeed = EnsureSeedSource(seedPos, familyId);
-        int convertedVanilla = waterManager.ConvertAdjacentVanillaSourcesIteratively(
-            seedPos,
-            waterConfig.MaxVanillaConversionPasses,
-            ControllerId
-        );
+        ConnectedManagedWaterResult connectedResult = waterManager.CollectConnectedManagedWaterCachedDetailed(seedPos);
+        bool isTruncated = connectedResult.IsTruncated;
+        int convertedVanilla = isTruncated
+            ? 0
+            : waterManager.ConvertAdjacentVanillaSourcesIteratively(
+                seedPos,
+                waterConfig.MaxVanillaConversionPasses,
+                ControllerId
+            );
 
         bool canSkipConnectivityScan =
             lastScheduledCadence == ArchimedesScrewControllerSchedule.LowCadence &&
@@ -482,13 +499,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        HashSet<string> connectedWaterKeys = waterManager.CollectConnectedManagedWaterCached(seedPos, out Dictionary<string, BlockPos> connectedWater);
+        HashSet<string> connectedWaterKeys = connectedResult.VisitedKeys;
+        Dictionary<string, BlockPos> connectedWater = connectedResult.PositionsByKey;
         ReconcileRelayOwnedPositions();
         int relayCap = ComputeEffectiveRelayCap(evaluation.CurrentPower);
         int relayWorkBudget = Math.Max(1, waterConfig.MaxRelayPromotionsPerTick);
         int relayCreated = 0;
         int relayTrimmed = 0;
-        if (waterConfig.EnableRelaySources)
+        if (waterConfig.EnableRelaySources && !isTruncated)
         {
             if (IsRelayCreationDue())
             {
@@ -497,9 +515,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             }
             relayTrimmed = TrimRelaySourcesToCap(seedPos, relayCap, relayWorkBudget);
         }
+        else if (isTruncated)
+        {
+            LogTruncationPause(seedPos, connectedResult.VisitedManagedCount);
+        }
 
-        List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWaterKeys);
-        int removedDisconnected = DrainUnsupportedSources(supportingSeeds, connectedWaterKeys, string.Empty);
+        int removedDisconnected = 0;
+        if (!isTruncated)
+        {
+            List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWaterKeys);
+            removedDisconnected = DrainUnsupportedSources(supportingSeeds, connectedWaterKeys, string.Empty);
+        }
 
         if (ensuredSeed)
         {
@@ -1105,6 +1131,40 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     {
         waterManager?.UpdateControllerSnapshot(ControllerId, Pos, ownedPositions.Values.ToList());
         MarkDirty();
+    }
+
+    private int CleanupUnownedManagedSourcesForControllerState()
+    {
+        if (waterManager == null || waterConfig == null)
+        {
+            return 0;
+        }
+
+        List<BlockPos> anchors = new();
+        if (lastSeedPos != null)
+        {
+            anchors.Add(lastSeedPos.Copy());
+        }
+
+        anchors.Add(Pos.Copy());
+        int budget = Math.Max(1, waterConfig.MaxBlocksPerStep * 2);
+        return waterManager.CleanupUnownedManagedSourcesAroundAnchors(anchors, budget);
+    }
+
+    private void LogTruncationPause(BlockPos seedPos, int visitedManagedCount)
+    {
+        long now = Environment.TickCount64;
+        if (now < nextTruncationPauseLogAtMs)
+        {
+            return;
+        }
+
+        nextTruncationPauseLogAtMs = now + 5000;
+        Log(
+            "Automation paused this tick because connected managed water was truncated near seed {0} (visitedManaged={1})",
+            seedPos,
+            visitedManagedCount
+        );
     }
 
     private bool CanUseSeedPosition(BlockPos seedPos)
