@@ -272,6 +272,15 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     return TextCommandResult.Success($"Removed {removed} screw blocks.");
                 })
             .EndSubCommand()
+            .BeginSubCommand("purgewaterscan")
+                .WithDescription("Chunk-scan purge of Archimedes water around online players (loaded area).")
+                .HandleWith(_ =>
+                {
+                    int removed = WaterManager?.PurgeArchimedesWaterByChunkScan() ?? 0;
+                    api.Logger.Notification("{0} Command purgewaterscan removed {1} Archimedes water blocks", LogPrefix, removed);
+                    return TextCommandResult.Success($"Removed {removed} Archimedes water blocks via chunk scan.");
+                })
+            .EndSubCommand()
             .BeginSubCommand("perf")
                 .WithDescription("Control Archimedes profiling logs (on/off/flush/status).")
                 .BeginSubCommand("on")

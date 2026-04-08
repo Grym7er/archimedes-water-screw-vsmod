@@ -1459,6 +1459,107 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return removed;
     }
 
+    /// <summary>
+    /// Chunk-scan purge: scans loaded chunks around online players and removes/reverts any Archimedes fluid it finds,
+    /// even if not present in manager ownership/snapshot state.
+    /// </summary>
+    public int PurgeArchimedesWaterByChunkScan(int chunkRadius = 8)
+    {
+        foreach (WeakReference<BlockEntityWaterArchimedesScrew> pair in loadedControllers.Values)
+        {
+            if (pair.TryGetTarget(out BlockEntityWaterArchimedesScrew? controller))
+            {
+                controller.ClearOwnedStateAfterPurge();
+            }
+        }
+
+        int radius = Math.Clamp(chunkRadius, 1, 64);
+        const int chunkSize = 32;
+        int mapHeight = Math.Max(1, api.WorldManager.MapSizeY);
+
+        HashSet<(int ChunkX, int ChunkZ)> chunks = new();
+        foreach (IPlayer player in api.World.AllOnlinePlayers)
+        {
+            if (player?.Entity == null)
+            {
+                continue;
+            }
+
+            int centerChunkX = (int)Math.Floor(player.Entity.ServerPos.X / chunkSize);
+            int centerChunkZ = (int)Math.Floor(player.Entity.ServerPos.Z / chunkSize);
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                for (int dz = -radius; dz <= radius; dz++)
+                {
+                    chunks.Add((centerChunkX + dx, centerChunkZ + dz));
+                }
+            }
+        }
+
+        int converted = 0;
+        int removed = 0;
+        List<BlockPos> removedPositions = new();
+        foreach ((int chunkX, int chunkZ) in chunks)
+        {
+            int minX = chunkX * chunkSize;
+            int minZ = chunkZ * chunkSize;
+            for (int lx = 0; lx < chunkSize; lx++)
+            {
+                for (int lz = 0; lz < chunkSize; lz++)
+                {
+                    int x = minX + lx;
+                    int z = minZ + lz;
+                    for (int y = 0; y < mapHeight; y++)
+                    {
+                        BlockPos pos = new(x, y, z);
+                        Block block = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+                        if (!IsArchimedesWaterBlock(block))
+                        {
+                            continue;
+                        }
+
+                        string key = PosKey(pos);
+                        if (TryGetVanillaEquivalent(block, out Block? vanillaEquivalent))
+                        {
+                            SuppressRemovalNotification(key);
+                            api.World.BlockAccessor.SetBlock(vanillaEquivalent.Id, pos, BlockLayersAccess.Fluid);
+                            TriggerLiquidUpdates(pos, vanillaEquivalent);
+                            converted++;
+                        }
+                        else
+                        {
+                            SuppressRemovalNotification(key);
+                            api.World.BlockAccessor.SetBlock(0, pos, BlockLayersAccess.Fluid);
+                            removedPositions.Add(pos.Copy());
+                            removed++;
+                        }
+                    }
+                }
+            }
+        }
+
+        foreach (BlockPos pos in removedPositions)
+        {
+            NotifyNeighboursOfFluidRemoval(pos);
+        }
+
+        sourceOwnerByPos.Clear();
+        unownedCleanupCooldownUntilMsByKey.Clear();
+        controllerOwnedById.Clear();
+
+        int total = converted + removed;
+        api.Logger.Notification(
+            "{0} PurgeArchimedesWaterByChunkScan replaced {1} Archimedes water blocks (convertedToVanilla={2}, removed={3}, scannedChunks={4}, radius={5})",
+            ArchimedesScrewModSystem.LogPrefix,
+            total,
+            converted,
+            removed,
+            chunks.Count,
+            radius
+        );
+        return total;
+    }
+
     public Block GetManagedBlock(string familyId, string flow, int height)
     {
         string cacheKey = $"{familyId}:{flow}:{height}";
