@@ -38,6 +38,7 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
     private int connectedManagedComponentCacheGeneration;
     private int activeSeedStatesCacheGeneration = -1;
     private bool isInGlobalWaterTickDispatch;
+    private long lastTruncationPauseLogAtMs;
     private long globalWaterTickListenerId;
     private long postLoadReactivationListenerId;
     private int postLoadReactivationAttemptsRemaining;
@@ -796,25 +797,27 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return activeSeedStatesCache;
     }
 
-    public HashSet<string> CollectConnectedManagedWater(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
+    public ConnectedManagedWaterResult CollectConnectedManagedWaterDetailed(BlockPos startPos)
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.collectConnectedManaged");
-        positionsByKey = new Dictionary<string, BlockPos>(StringComparer.Ordinal);
+        Dictionary<string, BlockPos> positionsByKey = new(StringComparer.Ordinal);
         HashSet<string> visited = new(StringComparer.Ordinal);
 
         Block startFluid = api.World.BlockAccessor.GetBlock(startPos, BlockLayersAccess.Fluid);
         if (!IsArchimedesWaterBlock(startFluid))
         {
-            return visited;
+            return new ConnectedManagedWaterResult(visited, positionsByKey, false, 0);
         }
 
         Queue<BlockPos> queue = new();
         queue.Enqueue(startPos.Copy());
         visited.Add(PosKey(startPos));
+        int visitedManagedCount = 0;
+        bool isTruncated = false;
 
         while (queue.Count > 0)
         {
-            if (visited.Count >= MaxBfsVisited)
+            if (visitedManagedCount >= MaxBfsVisited)
             {
                 api.Logger.Warning(
                     "{0} BFS in CollectConnectedManagedWater hit limit of {1} blocks starting at {2}",
@@ -822,18 +825,20 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
                     MaxBfsVisited,
                     startPos
                 );
+                isTruncated = true;
                 break;
             }
 
             BlockPos current = queue.Dequeue();
             string key = PosKey(current);
             positionsByKey[key] = current.Copy();
+            visitedManagedCount++;
 
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
                 BlockPos next = current.AddCopy(face);
                 string nextKey = PosKey(next);
-                if (!visited.Add(nextKey))
+                if (visited.Contains(nextKey))
                 {
                     continue;
                 }
@@ -844,49 +849,70 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
                     continue;
                 }
 
+                visited.Add(nextKey);
                 queue.Enqueue(next);
             }
         }
 
-        ArchimedesPerf.AddCount("water.collectConnectedManaged.visited", visited.Count);
-        return visited;
+        ArchimedesPerf.AddCount("water.collectConnectedManaged.visited", visitedManagedCount);
+        return new ConnectedManagedWaterResult(visited, positionsByKey, isTruncated, visitedManagedCount);
+    }
+
+    public HashSet<string> CollectConnectedManagedWater(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
+    {
+        ConnectedManagedWaterResult result = CollectConnectedManagedWaterDetailed(startPos);
+        positionsByKey = result.PositionsByKey;
+        return result.VisitedKeys;
     }
 
     /// <summary>
     /// Returns connected managed-water component for <paramref name="startPos"/> using a per-global-tick cache.
     /// Consumers must treat returned collections as read-only.
     /// </summary>
-    public HashSet<string> CollectConnectedManagedWaterCached(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
+    public ConnectedManagedWaterResult CollectConnectedManagedWaterCachedDetailed(BlockPos startPos)
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.collectConnectedManagedCached");
         if (!isInGlobalWaterTickDispatch)
         {
-            return CollectConnectedManagedWater(startPos, out positionsByKey);
+            return CollectConnectedManagedWaterDetailed(startPos);
         }
 
         string startKey = PosKey(startPos);
         if (connectedManagedComponentCache.TryGetValue(startKey, out ConnectedManagedComponentCacheEntry? cached) &&
             cached.Generation == connectedManagedComponentCacheGeneration)
         {
-            positionsByKey = cached.PositionsByKey;
             ArchimedesPerf.AddCount("water.collectConnectedManagedCached.hit");
-            return cached.Visited;
+            return new ConnectedManagedWaterResult(
+                cached.Visited,
+                cached.PositionsByKey,
+                cached.IsTruncated,
+                cached.VisitedManagedCount
+            );
         }
 
-        HashSet<string> visited = CollectConnectedManagedWater(startPos, out positionsByKey);
+        ConnectedManagedWaterResult result = CollectConnectedManagedWaterDetailed(startPos);
         ConnectedManagedComponentCacheEntry entry = new(
             connectedManagedComponentCacheGeneration,
-            visited,
-            positionsByKey
+            result.VisitedKeys,
+            result.PositionsByKey,
+            result.IsTruncated,
+            result.VisitedManagedCount
         );
         // Component-level fanout: any position in this connected region should hit cache this tick.
-        foreach (string key in visited)
+        foreach (string key in result.VisitedKeys)
         {
             connectedManagedComponentCache[key] = entry;
         }
         ArchimedesPerf.AddCount("water.collectConnectedManagedCached.miss");
-        ArchimedesPerf.AddCount("water.collectConnectedManagedCached.fanoutKeys", visited.Count);
-        return visited;
+        ArchimedesPerf.AddCount("water.collectConnectedManagedCached.fanoutKeys", result.VisitedKeys.Count);
+        return result;
+    }
+
+    public HashSet<string> CollectConnectedManagedWaterCached(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
+    {
+        ConnectedManagedWaterResult result = CollectConnectedManagedWaterCachedDetailed(startPos);
+        positionsByKey = result.PositionsByKey;
+        return result.VisitedKeys;
     }
 
     public HashSet<string> CollectConnectedArchimedesSources(BlockPos startPos, out Dictionary<string, BlockPos> sourcePositionsByKey)
@@ -1035,11 +1061,74 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         RemoveFluidAndNotifyNeighbours(pos);
     }
 
+    public int CleanupUnownedManagedSourcesAroundAnchors(IReadOnlyCollection<BlockPos> anchors, int maxRemovals)
+    {
+        int budget = Math.Max(0, maxRemovals);
+        if (budget == 0 || anchors.Count == 0)
+        {
+            return 0;
+        }
+
+        int removed = 0;
+        HashSet<string> seenKeys = new(StringComparer.Ordinal);
+        foreach (BlockPos anchor in anchors)
+        {
+            if (removed >= budget)
+            {
+                break;
+            }
+
+            CollectConnectedManagedWater(anchor, out Dictionary<string, BlockPos> connectedWater);
+            foreach ((string key, BlockPos pos) in connectedWater)
+            {
+                if (removed >= budget || !seenKeys.Add(key))
+                {
+                    continue;
+                }
+
+                if (sourceOwnerByPos.ContainsKey(key))
+                {
+                    continue;
+                }
+
+                Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+                if (!IsArchimedesSourceBlock(fluid))
+                {
+                    continue;
+                }
+
+                SuppressRemovalNotification(key);
+                RemoveFluidAndNotifyNeighbours(pos);
+                removed++;
+            }
+        }
+
+        if (removed > 0)
+        {
+            api.Logger.Warning(
+                "{0} CleanupUnownedManagedSourcesAroundAnchors removed {1} unowned managed source(s) (anchors={2}, budget={3})",
+                ArchimedesScrewModSystem.LogPrefix,
+                removed,
+                anchors.Count,
+                budget
+            );
+        }
+
+        return removed;
+    }
+
     public int ConvertAdjacentVanillaSources(BlockPos startPos, string? ownerHintControllerId = null)
     {
+        ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterDetailed(startPos);
+        if (connectedResult.IsTruncated)
+        {
+            LogTruncationPausedAutomation("ConvertAdjacentVanillaSources", startPos, connectedResult.VisitedManagedCount);
+            return 0;
+        }
+
         int converted = 0;
         HashSet<string> convertedKeys = new(StringComparer.Ordinal);
-        CollectConnectedManagedWater(startPos, out Dictionary<string, BlockPos> connectedWater);
+        Dictionary<string, BlockPos> connectedWater = connectedResult.PositionsByKey;
         foreach (BlockPos pos in connectedWater.Values)
         {
             Block currentFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
@@ -1579,7 +1668,14 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
 
     private bool AssignNearestActiveControllerForNewSource(BlockPos sourcePos, string familyId, string reason = "new source assignment")
     {
-        CollectConnectedManagedWaterCached(sourcePos, out Dictionary<string, BlockPos> connectedWater);
+        ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterCachedDetailed(sourcePos);
+        if (connectedResult.IsTruncated)
+        {
+            LogTruncationPausedAutomation("AssignNearestActiveControllerForNewSource", sourcePos, connectedResult.VisitedManagedCount);
+            return false;
+        }
+
+        Dictionary<string, BlockPos> connectedWater = connectedResult.PositionsByKey;
         string? nearest = FindNearestActiveControllerId(
             sourcePos,
             connectedWater.Keys,
@@ -1892,10 +1988,31 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return dx * dx + dy * dy + dz * dz;
     }
 
+    private void LogTruncationPausedAutomation(string operation, BlockPos startPos, int visitedManagedCount)
+    {
+        long now = Environment.TickCount64;
+        if (now - lastTruncationPauseLogAtMs < 5000)
+        {
+            return;
+        }
+
+        lastTruncationPauseLogAtMs = now;
+        api.Logger.Warning(
+            "{0} {1} paused: connected managed component truncated near {2} (visitedManaged={3}, cap={4})",
+            ArchimedesScrewModSystem.LogPrefix,
+            operation,
+            startPos,
+            visitedManagedCount,
+            MaxBfsVisited
+        );
+    }
+
     private sealed record ConnectedManagedComponentCacheEntry(
         int Generation,
         HashSet<string> Visited,
-        Dictionary<string, BlockPos> PositionsByKey
+        Dictionary<string, BlockPos> PositionsByKey,
+        bool IsTruncated,
+        int VisitedManagedCount
     );
 
     private bool ControllerSnapshotContainsPos(string controllerId, string key)
@@ -1936,4 +2053,11 @@ public readonly record struct ManagedSourceDebugInfo(
     bool OwnerSnapshotContainsPos,
     bool OwnerControllerLoaded,
     bool OwnerLoadedControllerTracksPos
+);
+
+public readonly record struct ConnectedManagedWaterResult(
+    HashSet<string> VisitedKeys,
+    Dictionary<string, BlockPos> PositionsByKey,
+    bool IsTruncated,
+    int VisitedManagedCount
 );
