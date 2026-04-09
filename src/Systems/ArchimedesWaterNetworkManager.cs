@@ -1362,7 +1362,6 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
             CollectManagedComponentKeysAroundAnchor(pos, allWaterKeys);
         }
 
-        int converted = 0;
         int removed = 0;
         List<BlockPos> removedPositions = new();
         foreach (string key in allWaterKeys)
@@ -1380,20 +1379,10 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
                 continue;
             }
 
-            if (TryGetVanillaEquivalent(block, out Block? vanillaEquivalent))
-            {
-                SuppressRemovalNotification(key);
-                api.World.BlockAccessor.SetBlock(vanillaEquivalent.Id, pos, BlockLayersAccess.Fluid);
-                TriggerLiquidUpdates(pos, vanillaEquivalent);
-                converted++;
-            }
-            else
-            {
-                SuppressRemovalNotification(key);
-                api.World.BlockAccessor.SetBlock(0, pos, BlockLayersAccess.Fluid);
-                removedPositions.Add(pos);
-                removed++;
-            }
+            SuppressRemovalNotification(key);
+            api.World.BlockAccessor.SetBlock(0, pos, BlockLayersAccess.Fluid);
+            removedPositions.Add(pos);
+            removed++;
         }
 
         foreach (BlockPos pos in removedPositions)
@@ -1407,15 +1396,12 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
 
         LogSkippedInvalidPosKeys("PurgeManagedWater", skippedInvalidKeys, invalidSamples);
 
-        int total = converted + removed;
         api.Logger.Notification(
-            "{0} PurgeManagedWater replaced {1} Archimedes water blocks (convertedToVanilla={2}, removed={3})",
+            "{0} PurgeManagedWater deleted {1} Archimedes water blocks",
             ArchimedesScrewModSystem.LogPrefix,
-            total,
-            converted,
             removed
         );
-        return total;
+        return removed;
     }
 
     public int PurgeScrewsOnly()
@@ -1496,7 +1482,6 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
             }
         }
 
-        int converted = 0;
         int removed = 0;
         List<BlockPos> removedPositions = new();
         foreach ((int chunkX, int chunkZ) in chunks)
@@ -1519,20 +1504,10 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
                         }
 
                         string key = PosKey(pos);
-                        if (TryGetVanillaEquivalent(block, out Block? vanillaEquivalent))
-                        {
-                            SuppressRemovalNotification(key);
-                            api.World.BlockAccessor.SetBlock(vanillaEquivalent.Id, pos, BlockLayersAccess.Fluid);
-                            TriggerLiquidUpdates(pos, vanillaEquivalent);
-                            converted++;
-                        }
-                        else
-                        {
-                            SuppressRemovalNotification(key);
-                            api.World.BlockAccessor.SetBlock(0, pos, BlockLayersAccess.Fluid);
-                            removedPositions.Add(pos.Copy());
-                            removed++;
-                        }
+                        SuppressRemovalNotification(key);
+                        api.World.BlockAccessor.SetBlock(0, pos, BlockLayersAccess.Fluid);
+                        removedPositions.Add(pos.Copy());
+                        removed++;
                     }
                 }
             }
@@ -1547,17 +1522,14 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         unownedCleanupCooldownUntilMsByKey.Clear();
         controllerOwnedById.Clear();
 
-        int total = converted + removed;
         api.Logger.Notification(
-            "{0} PurgeArchimedesWaterByChunkScan replaced {1} Archimedes water blocks (convertedToVanilla={2}, removed={3}, scannedChunks={4}, radius={5})",
+            "{0} PurgeArchimedesWaterByChunkScan deleted {1} Archimedes water blocks (scannedChunks={2}, radius={3})",
             ArchimedesScrewModSystem.LogPrefix,
-            total,
-            converted,
             removed,
             chunks.Count,
             radius
         );
-        return total;
+        return removed;
     }
 
     public Block GetManagedBlock(string familyId, string flow, int height)

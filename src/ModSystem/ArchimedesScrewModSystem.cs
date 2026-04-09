@@ -246,7 +246,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             .WithDescription("Administrative commands for the Archimedes Screw mod.")
             .RequiresPrivilege(Privilege.controlserver)
             .BeginSubCommand("purge")
-                .WithDescription("Remove all Archimedes screw blocks and all known Archimedes water.")
+                .WithDescription("Delete all Archimedes screw blocks and all known Archimedes water.")
                 .HandleWith(_ =>
                 {
                     int removed = WaterManager?.PurgeAll() ?? 0;
@@ -255,7 +255,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 })
             .EndSubCommand()
             .BeginSubCommand("purgewater")
-                .WithDescription("Remove all known Archimedes water blocks.")
+                .WithDescription("Delete all known Archimedes water blocks.")
                 .HandleWith(_ =>
                 {
                     int removed = WaterManager?.PurgeManagedWater() ?? 0;
@@ -264,7 +264,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 })
             .EndSubCommand()
             .BeginSubCommand("purgescrews")
-                .WithDescription("Remove all Archimedes screw blocks.")
+                .WithDescription("Delete all Archimedes screw blocks.")
                 .HandleWith(_ =>
                 {
                     int removed = WaterManager?.PurgeScrewsOnly() ?? 0;
@@ -273,7 +273,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 })
             .EndSubCommand()
             .BeginSubCommand("purgewaterscan")
-                .WithDescription("Chunk-scan purge of Archimedes water around online players (loaded area).")
+                .WithDescription("Chunk-scan delete of Archimedes water around online players (loaded area).")
                 .HandleWith(_ =>
                 {
                     int removed = WaterManager?.PurgeArchimedesWaterByChunkScan() ?? 0;

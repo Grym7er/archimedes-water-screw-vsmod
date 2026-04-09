@@ -428,10 +428,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             TryArmTopologyChangeGrace(evaluation.FailureReason);
             wasController = false;
+            bool forceDrain = ShouldForceDrainWhenControllerInvalid(evaluation.FailureReason);
             int removed = DrainUnsupportedSources(
                 Array.Empty<ArchimedesOutletState>(),
                 EmptyKeySet,
-                evaluation.FailureReason);
+                evaluation.FailureReason,
+                ignoreGrace: forceDrain);
             int orphanRemoved = CleanupUnownedManagedSourcesForControllerState();
             ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
                 ? ArchimedesScrewControllerSchedule.HighCadence
@@ -1022,7 +1024,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return behavior?.Network == null ? 0f : Math.Abs(behavior.Network.Speed);
     }
 
-    private int DrainUnsupportedSources(IReadOnlyCollection<ArchimedesOutletState> referenceSeeds, HashSet<string> supportedKeySet, string reason)
+    private int DrainUnsupportedSources(IReadOnlyCollection<ArchimedesOutletState> referenceSeeds, HashSet<string> supportedKeySet, string reason, bool ignoreGrace = false)
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("controller.drainUnsupported");
         if (Api == null || waterManager == null || waterConfig == null)
@@ -1031,7 +1033,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         long now = Environment.TickCount64;
-        if (now < drainUnsupportedGraceUntilMs)
+        if (!ignoreGrace && now < drainUnsupportedGraceUntilMs)
         {
             return 0;
         }
@@ -1276,6 +1278,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             drainUnsupportedGraceUntilMs = until;
         }
+    }
+
+    private static bool ShouldForceDrainWhenControllerInvalid(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return false;
+        }
+
+        return reason.StartsWith("unsupported intake fluid:", StringComparison.Ordinal) ||
+               reason.StartsWith("assembly invalid: Intake is not placed inside supported vanilla or Archimedes water.", StringComparison.Ordinal);
     }
 
     private void LogStateChange(string name, ref bool? lastValue, bool value)
