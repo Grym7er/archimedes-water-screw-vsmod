@@ -364,9 +364,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (ownedBytes != null)
         {
             int[] flatPositions = SerializerUtil.Deserialize<int[]>(ownedBytes);
-            for (int i = 0; i + 2 < flatPositions.Length; i += 3)
+            foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatPositions))
             {
-                BlockPos pos = new(flatPositions[i], flatPositions[i + 1], flatPositions[i + 2]);
                 ownedPositions[ArchimedesWaterNetworkManager.PosKey(pos)] = pos;
             }
         }
@@ -376,15 +375,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (relayBytes != null)
         {
             int[] flatRelayPositions = SerializerUtil.Deserialize<int[]>(relayBytes);
-            for (int i = 0; i + 2 < flatRelayPositions.Length; i += 3)
+            foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatRelayPositions))
             {
-                BlockPos pos = new(flatRelayPositions[i], flatRelayPositions[i + 1], flatRelayPositions[i + 2]);
                 relayOwnedPositions[ArchimedesWaterNetworkManager.PosKey(pos)] = pos;
             }
         }
 
         byte[]? seedBytes = tree.GetBytes(LastSeedKey);
-        lastSeedPos = seedBytes == null ? null : DecodeSinglePos(SerializerUtil.Deserialize<int[]>(seedBytes));
+        lastSeedPos = seedBytes == null ? null : ArchimedesPositionCodec.DecodeSinglePos(SerializerUtil.Deserialize<int[]>(seedBytes));
 
         deserializedLastEffectiveRelayCap = tree.GetInt(LastEffectiveRelayCapKey, -1);
     }
@@ -395,8 +393,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         tree.SetString(ControllerIdKey, ControllerId);
         tree.SetBool(WasControllerKey, wasController);
-        tree.SetBytes(OwnedPositionsKey, SerializerUtil.Serialize(EncodePositions(ownedPositions.Values)));
-        tree.SetBytes(RelayPositionsKey, SerializerUtil.Serialize(EncodePositions(relayOwnedPositions.Values)));
+        tree.SetBytes(OwnedPositionsKey, SerializerUtil.Serialize(ArchimedesPositionCodec.EncodePositions(ownedPositions.Values)));
+        tree.SetBytes(RelayPositionsKey, SerializerUtil.Serialize(ArchimedesPositionCodec.EncodePositions(relayOwnedPositions.Values)));
         tree.SetInt(LastEffectiveRelayCapKey, lastEffectiveRelayCap);
 
         if (lastSeedPos == null)
@@ -426,23 +424,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (!evaluation.IsController)
         {
-            TryArmTopologyChangeGrace(evaluation.FailureReason);
             wasController = false;
-            bool forceDrain = ShouldForceDrainWhenControllerInvalid(evaluation.FailureReason);
-            int removed = DrainUnsupportedSources(
-                Array.Empty<ArchimedesOutletState>(),
-                EmptyKeySet,
-                evaluation.FailureReason,
-                ignoreGrace: forceDrain);
-            int orphanRemoved = CleanupUnownedManagedSourcesForControllerState();
-            ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
-                ? ArchimedesScrewControllerSchedule.HighCadence
-                : ArchimedesScrewControllerSchedule.LowCadence;
-            if (orphanRemoved > 0)
-            {
-                schedule = ArchimedesScrewControllerSchedule.HighCadence;
-            }
-            ScheduleNextWaterTick(schedule, fastMs, idleMs);
+            HandleInvalidControllerState(evaluation, fastMs, idleMs, forceDrainWhenInvalid: true);
             return;
         }
 
@@ -450,20 +433,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
-            TryArmTopologyChangeGrace(evaluation.FailureReason);
-            int removed = DrainUnsupportedSources(
-                Array.Empty<ArchimedesOutletState>(),
-                EmptyKeySet,
-                evaluation.FailureReason);
-            int orphanRemoved = CleanupUnownedManagedSourcesForControllerState();
-            ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
-                ? ArchimedesScrewControllerSchedule.HighCadence
-                : ArchimedesScrewControllerSchedule.LowCadence;
-            if (orphanRemoved > 0)
-            {
-                schedule = ArchimedesScrewControllerSchedule.HighCadence;
-            }
-            ScheduleNextWaterTick(schedule, fastMs, idleMs);
+            HandleInvalidControllerState(evaluation, fastMs, idleMs, forceDrainWhenInvalid: false);
             return;
         }
 
@@ -893,7 +863,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int overflow = relayOwnedPositions.Count - relayCap;
         int removeCount = Math.Min(Math.Max(1, perTickBudget), overflow);
         List<BlockPos> ordered = relayOwnedPositions.Values
-            .OrderByDescending(pos => DistanceSquared(pos, seedPos))
+            .OrderByDescending(pos => ArchimedesPositionCodec.DistanceSquared(pos, seedPos))
             .ThenByDescending(pos => pos.Y)
             .Take(removeCount)
             .ToList();
@@ -927,42 +897,32 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return false;
         }
 
-        BlockPos belowPos = pos.DownCopy();
-        Block belowFluid = Api.World.BlockAccessor.GetBlock(belowPos, BlockLayersAccess.Fluid);
-        if (belowFluid.IsLiquid())
+        return ArchimedesRelayAdjacency.IsRelaySupportAndAdjacentWhitelistSatisfied(Api.World, pos);
+    }
+
+    private void HandleInvalidControllerState(
+        ControllerEvaluation evaluation,
+        int fastMs,
+        int idleMs,
+        bool forceDrainWhenInvalid)
+    {
+        TryArmTopologyChangeGrace(evaluation.FailureReason);
+        bool forceDrain = forceDrainWhenInvalid && ShouldForceDrainWhenControllerInvalid(evaluation.FailureReason);
+        int removed = DrainUnsupportedSources(
+            Array.Empty<ArchimedesOutletState>(),
+            EmptyKeySet,
+            evaluation.FailureReason,
+            ignoreGrace: forceDrain);
+        int orphanRemoved = CleanupUnownedManagedSourcesForControllerState();
+        ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
+            ? ArchimedesScrewControllerSchedule.HighCadence
+            : ArchimedesScrewControllerSchedule.LowCadence;
+        if (orphanRemoved > 0)
         {
-            return false;
+            schedule = ArchimedesScrewControllerSchedule.HighCadence;
         }
 
-        Block belowSolid = Api.World.BlockAccessor.GetBlock(belowPos);
-        AssetLocation? belowCode = belowSolid.Code;
-        bool belowIsTallgrass = belowCode != null &&
-                                string.Equals(belowCode.Domain, "game", StringComparison.Ordinal) &&
-                                belowCode.Path.StartsWith("tallgrass-", StringComparison.Ordinal);
-        if (belowSolid.Id == 0 && !belowIsTallgrass)
-        {
-            return false;
-        }
-
-        foreach (BlockFacing face in BlockFacing.HORIZONTALS)
-        {
-            BlockPos adjacentPos = pos.AddCopy(face);
-            Block adjacentSolid = Api.World.BlockAccessor.GetBlock(adjacentPos);
-            Block adjacentFluid = Api.World.BlockAccessor.GetBlock(adjacentPos, BlockLayersAccess.Fluid);
-            bool isAirCell = adjacentSolid.Id == 0 && adjacentFluid.Id == 0;
-            bool isIntake = adjacentSolid is BlockWaterArchimedesScrew screw && screw.IsIntakeBlock();
-            AssetLocation? adjacentCode = adjacentSolid.Code;
-            bool isTallgrass = adjacentCode != null &&
-                               string.Equals(adjacentCode.Domain, "game", StringComparison.Ordinal) &&
-                               adjacentCode.Path.StartsWith("tallgrass-", StringComparison.Ordinal);
-            bool isWhitelisted = isIntake || isTallgrass;
-            if (isAirCell || isWhitelisted)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        ScheduleNextWaterTick(schedule, fastMs, idleMs);
     }
 
     private Dictionary<string, int> BuildDistanceMap(BlockPos seedPos, HashSet<string> connectedWaterKeys)
@@ -1347,43 +1307,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     private static int MinDistanceSquared(BlockPos pos, IEnumerable<BlockPos> origins)
     {
-        return origins.Min(origin => DistanceSquared(pos, origin));
-    }
-
-    private static int DistanceSquared(BlockPos a, BlockPos b)
-    {
-        int dx = a.X - b.X;
-        int dy = a.Y - b.Y;
-        int dz = a.Z - b.Z;
-        return dx * dx + dy * dy + dz * dz;
-    }
-
-    private static int ManhattanDistance(BlockPos a, BlockPos b)
-    {
-        return Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y) + Math.Abs(a.Z - b.Z);
-    }
-
-    private static int[] EncodePositions(IEnumerable<BlockPos> positions)
-    {
-        List<int> flat = new();
-        foreach (BlockPos pos in positions)
-        {
-            flat.Add(pos.X);
-            flat.Add(pos.Y);
-            flat.Add(pos.Z);
-        }
-
-        return flat.ToArray();
-    }
-
-    private static BlockPos? DecodeSinglePos(int[]? values)
-    {
-        if (values == null || values.Length < 3)
-        {
-            return null;
-        }
-
-        return new BlockPos(values[0], values[1], values[2]);
+        return origins.Min(origin => ArchimedesPositionCodec.DistanceSquared(pos, origin));
     }
 
     private readonly record struct ControllerEvaluation(
