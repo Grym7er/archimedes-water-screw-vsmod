@@ -15,6 +15,9 @@ public sealed class ArchimedesWaterDebugSnapshotPacket
 
     [ProtoMember(2)]
     public List<ArchimedesWaterDebugSourcePacket> Sources { get; set; } = new();
+
+    [ProtoMember(3)]
+    public List<ArchimedesWaterDebugPosPacket> RelayCandidates { get; set; } = new();
 }
 
 [ProtoContract]
@@ -39,9 +42,23 @@ public sealed class ArchimedesWaterDebugSourcePacket
     public bool IsOwnershipConsistent { get; set; }
 }
 
+[ProtoContract]
+public sealed class ArchimedesWaterDebugPosPacket
+{
+    [ProtoMember(1)]
+    public int X { get; set; }
+
+    [ProtoMember(2)]
+    public int Y { get; set; }
+
+    [ProtoMember(3)]
+    public int Z { get; set; }
+}
+
 internal sealed class ArchimedesWaterDebugOverlay
 {
-    private const int HighlightSlot = 76031;
+    private const int SourceHighlightSlot = 76031;
+    private const int RelayHighlightSlot = 76032;
 
     /// <summary>
     /// <see cref="ICoreClientAPI.World.HighlightBlocks"/> expects packed <b>RGBA</b> (R = least-significant byte, A = most-significant),
@@ -54,6 +71,7 @@ internal sealed class ArchimedesWaterDebugOverlay
     private static readonly int OwnedColor = PackHighlightRgba(0x00, 0xFF, 0x00);
     private static readonly int UnownedColor = PackHighlightRgba(0xFF, 0x00, 0x00);
     private static readonly int InconsistentOwnedColor = PackHighlightRgba(0xFF, 0xCC, 0x00);
+    private static readonly int RelayCandidateColor = PackHighlightRgba(0xB0, 0x40, 0xFF);
 
     private readonly ICoreClientAPI capi;
 
@@ -64,16 +82,17 @@ internal sealed class ArchimedesWaterDebugOverlay
 
     public void ApplySnapshot(ArchimedesWaterDebugSnapshotPacket packet)
     {
-        if (!packet.Enabled || packet.Sources.Count == 0)
+        if (!packet.Enabled)
         {
-            capi.World.HighlightBlocks(capi.World.Player, HighlightSlot, new List<BlockPos>(), new List<int>());
+            capi.World.HighlightBlocks(capi.World.Player, SourceHighlightSlot, new List<BlockPos>(), new List<int>());
+            capi.World.HighlightBlocks(capi.World.Player, RelayHighlightSlot, new List<BlockPos>(), new List<int>());
             return;
         }
 
-        List<BlockPos> positions = packet.Sources
+        List<BlockPos> sourcePositions = packet.Sources
             .Select(s => new BlockPos(s.X, s.Y, s.Z))
             .ToList();
-        List<int> colors = packet.Sources
+        List<int> sourceColors = packet.Sources
             .Select(s => s.IsOwned
                 ? (s.IsOwnershipConsistent ? OwnedColor : InconsistentOwnedColor)
                 : UnownedColor)
@@ -81,9 +100,25 @@ internal sealed class ArchimedesWaterDebugOverlay
 
         capi.World.HighlightBlocks(
             capi.World.Player,
-            HighlightSlot,
-            positions,
-            colors,
+            SourceHighlightSlot,
+            sourcePositions,
+            sourceColors,
+            EnumHighlightBlocksMode.Absolute,
+            EnumHighlightShape.Cube
+        );
+
+        List<BlockPos> relayPositions = packet.RelayCandidates
+            .Select(s => new BlockPos(s.X, s.Y, s.Z))
+            .ToList();
+        List<int> relayColors = packet.RelayCandidates
+            .Select(_ => RelayCandidateColor)
+            .ToList();
+
+        capi.World.HighlightBlocks(
+            capi.World.Player,
+            RelayHighlightSlot,
+            relayPositions,
+            relayColors,
             EnumHighlightBlocksMode.Absolute,
             EnumHighlightShape.Cube
         );

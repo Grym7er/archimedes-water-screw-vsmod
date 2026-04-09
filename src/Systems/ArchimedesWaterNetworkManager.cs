@@ -718,6 +718,46 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return result;
     }
 
+    public IReadOnlyList<BlockPos> CollectRelayCandidateDebug(BlockPos center, int radius)
+    {
+        int clampedRadius = Math.Clamp(radius, 1, 128);
+        var result = new List<BlockPos>();
+        HashSet<string> seen = new(StringComparer.Ordinal);
+
+        int minX = center.X - clampedRadius;
+        int maxX = center.X + clampedRadius;
+        int minY = center.Y - clampedRadius;
+        int maxY = center.Y + clampedRadius;
+        int minZ = center.Z - clampedRadius;
+        int maxZ = center.Z + clampedRadius;
+
+        for (int x = minX; x <= maxX; x++)
+        {
+            for (int y = minY; y <= maxY; y++)
+            {
+                for (int z = minZ; z <= maxZ; z++)
+                {
+                    BlockPos pos = new(x, y, z);
+                    Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+                    if (!IsArchimedesLowestFlowingBlock(fluid) || !IsRelayDebugCandidatePosition(pos))
+                    {
+                        continue;
+                    }
+
+                    string key = PosKey(pos);
+                    if (!seen.Add(key))
+                    {
+                        continue;
+                    }
+
+                    result.Add(pos.Copy());
+                }
+            }
+        }
+
+        return result;
+    }
+
     public bool TryResolveVanillaWaterFamily(Block block, out string familyId)
     {
         if (ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out ArchimedesWaterFamily family))
@@ -1644,6 +1684,45 @@ public sealed class ArchimedesWaterNetworkManager : IDisposable
         return block.IsLiquid() &&
                ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _) &&
                IsSourceHeight(block.Variant?["height"]);
+    }
+
+    private bool IsRelayDebugCandidatePosition(BlockPos pos)
+    {
+        BlockPos belowPos = pos.DownCopy();
+        Block belowFluid = api.World.BlockAccessor.GetBlock(belowPos, BlockLayersAccess.Fluid);
+        if (belowFluid.IsLiquid())
+        {
+            return false;
+        }
+
+        Block belowSolid = api.World.BlockAccessor.GetBlock(belowPos);
+        AssetLocation? belowCode = belowSolid.Code;
+        bool belowIsTallgrass = belowCode != null &&
+                                string.Equals(belowCode.Domain, "game", StringComparison.Ordinal) &&
+                                belowCode.Path.StartsWith("tallgrass-", StringComparison.Ordinal);
+        if (belowSolid.Id == 0 && !belowIsTallgrass)
+        {
+            return false;
+        }
+
+        foreach (BlockFacing face in BlockFacing.HORIZONTALS)
+        {
+            BlockPos adjacentPos = pos.AddCopy(face);
+            Block adjacentSolid = api.World.BlockAccessor.GetBlock(adjacentPos);
+            Block adjacentFluid = api.World.BlockAccessor.GetBlock(adjacentPos, BlockLayersAccess.Fluid);
+            bool isAirCell = adjacentSolid.Id == 0 && adjacentFluid.Id == 0;
+            bool isIntake = adjacentSolid is BlockWaterArchimedesScrew screw && screw.IsIntakeBlock();
+            AssetLocation? adjacentCode = adjacentSolid.Code;
+            bool isTallgrass = adjacentCode != null &&
+                               string.Equals(adjacentCode.Domain, "game", StringComparison.Ordinal) &&
+                               adjacentCode.Path.StartsWith("tallgrass-", StringComparison.Ordinal);
+            if (isAirCell || isIntake || isTallgrass)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private bool IsVanillaSelfSustainingSourceForFamily(Block block, string familyId)

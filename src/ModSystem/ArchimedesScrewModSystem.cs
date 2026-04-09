@@ -6,6 +6,7 @@ using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
+using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
 namespace ArchimedesScrew;
@@ -324,7 +325,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 .EndSubCommand()
             .EndSubCommand()
             .BeginSubCommand("debugwater")
-                .WithDescription("Visualize managed source ownership (green=consistent owned, orange=owned inconsistent, red=unowned).")
+                .WithDescription("Visualize water debug info (green=consistent owned, orange=owned inconsistent, red=unowned, purple=relay candidates).")
                 .BeginSubCommand("on")
                     .WithDescription("Enable periodic water ownership overlay for all connected clients.")
                     .HandleWith(_ =>
@@ -332,7 +333,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                         waterDebugEnabled = true;
                         EnsureWaterDebugTickListener(api);
                         SendWaterDebugSnapshotToAllPlayers();
-                        return TextCommandResult.Success("Water debug overlay enabled (green=consistent owned, orange=owned inconsistent, red=unowned).");
+                        return TextCommandResult.Success("Water debug overlay enabled (green=consistent owned, orange=owned inconsistent, red=unowned, purple=relay candidates).");
                     })
                 .EndSubCommand()
                 .BeginSubCommand("off")
@@ -435,6 +436,8 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
             IReadOnlyList<ManagedSourceDebugInfo> sources =
                 WaterManager.CollectManagedSourceDebug(serverPlayer.Entity.Pos.AsBlockPos, WaterDebugRadius);
+            IReadOnlyList<BlockPos> relayCandidates =
+                WaterManager.CollectRelayCandidateDebug(serverPlayer.Entity.Pos.AsBlockPos, WaterDebugRadius);
             var packet = new ArchimedesWaterDebugSnapshotPacket
             {
                 Enabled = true
@@ -450,6 +453,16 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     IsOwned = source.IsOwned,
                     OwnerId = source.OwnerId,
                     IsOwnershipConsistent = source.IsOwnershipConsistent
+                });
+            }
+
+            foreach (BlockPos relayCandidate in relayCandidates)
+            {
+                packet.RelayCandidates.Add(new ArchimedesWaterDebugPosPacket
+                {
+                    X = relayCandidate.X,
+                    Y = relayCandidate.Y,
+                    Z = relayCandidate.Z
                 });
             }
 

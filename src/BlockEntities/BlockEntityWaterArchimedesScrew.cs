@@ -763,6 +763,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         int stride = Math.Max(2, waterConfig.RelayStrideBlocks);
         Dictionary<string, int> distanceByKey = BuildDistanceMap(seedPos, connectedWaterKeys);
+        Dictionary<string, int> nearestRelayWaterDistanceByKey = BuildNearestRelayWaterDistanceMap(connectedWaterKeys, connectedWater);
         int candidatesExamined = 0;
         int created = 0;
         int budget = Math.Max(1, perTickBudget);
@@ -801,7 +802,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 continue;
             }
 
-            if (!IsRelayFarEnoughFromOwnedRelays(pos, stride))
+            if (nearestRelayWaterDistanceByKey.TryGetValue(key, out int waterDistanceToNearestRelay) &&
+                waterDistanceToNearestRelay < stride)
             {
                 continue;
             }
@@ -824,6 +826,61 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         return created;
+    }
+
+    private Dictionary<string, int> BuildNearestRelayWaterDistanceMap(
+        HashSet<string> connectedWaterKeys,
+        Dictionary<string, BlockPos> connectedWater)
+    {
+        Dictionary<string, int> nearestDistanceByKey = new(StringComparer.Ordinal);
+        if (connectedWaterKeys.Count == 0 || relayOwnedPositions.Count == 0)
+        {
+            return nearestDistanceByKey;
+        }
+
+        Queue<BlockPos> queue = new();
+        foreach ((string relayKey, BlockPos relayPos) in relayOwnedPositions)
+        {
+            if (!connectedWaterKeys.Contains(relayKey))
+            {
+                continue;
+            }
+
+            if (nearestDistanceByKey.TryAdd(relayKey, 0))
+            {
+                queue.Enqueue(relayPos.Copy());
+            }
+        }
+
+        while (queue.Count > 0)
+        {
+            BlockPos current = queue.Dequeue();
+            string currentKey = ArchimedesWaterNetworkManager.PosKey(current);
+            if (!nearestDistanceByKey.TryGetValue(currentKey, out int currentDistance))
+            {
+                continue;
+            }
+
+            foreach (BlockFacing face in BlockFacing.ALLFACES)
+            {
+                BlockPos next = current.AddCopy(face);
+                string nextKey = ArchimedesWaterNetworkManager.PosKey(next);
+                if (!connectedWaterKeys.Contains(nextKey) || nearestDistanceByKey.ContainsKey(nextKey))
+                {
+                    continue;
+                }
+
+                if (!connectedWater.TryGetValue(nextKey, out BlockPos? canonicalNextPos))
+                {
+                    continue;
+                }
+
+                nearestDistanceByKey[nextKey] = currentDistance + 1;
+                queue.Enqueue(canonicalNextPos.Copy());
+            }
+        }
+
+        return nearestDistanceByKey;
     }
 
     private int TrimRelaySourcesToCap(BlockPos seedPos, int relayCap, int perTickBudget)
@@ -878,7 +935,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         Block belowSolid = Api.World.BlockAccessor.GetBlock(belowPos);
-        if (belowSolid.Id == 0)
+        AssetLocation? belowCode = belowSolid.Code;
+        bool belowIsTallgrass = belowCode != null &&
+                                string.Equals(belowCode.Domain, "game", StringComparison.Ordinal) &&
+                                belowCode.Path.StartsWith("tallgrass-", StringComparison.Ordinal);
+        if (belowSolid.Id == 0 && !belowIsTallgrass)
         {
             return false;
         }
@@ -946,24 +1007,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private void ScheduleNextRelayCreationTick(int intervalMs)
     {
         nextRelayCreationDueMs = Environment.TickCount64 + Math.Max(1, intervalMs);
-    }
-
-    private bool IsRelayFarEnoughFromOwnedRelays(BlockPos candidatePos, int minManhattanDistance)
-    {
-        if (relayOwnedPositions.Count == 0)
-        {
-            return true;
-        }
-
-        foreach (BlockPos relayPos in relayOwnedPositions.Values)
-        {
-            if (ManhattanDistance(candidatePos, relayPos) < minManhattanDistance)
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private void ReconcileRelayOwnedPositions()
