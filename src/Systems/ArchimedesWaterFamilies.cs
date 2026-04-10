@@ -72,7 +72,17 @@ public static class ArchimedesWaterFamilies
 
     public static ArchimedesWaterFamily GetById(string familyId)
     {
-        return All.First(family => string.Equals(family.Id, familyId, StringComparison.Ordinal));
+        foreach (ArchimedesWaterFamily family in All)
+        {
+            if (string.Equals(family.Id, familyId, StringComparison.Ordinal))
+            {
+                return family;
+            }
+        }
+
+        string validIds = string.Join(", ", All.Select(f => f.Id));
+        throw new InvalidOperationException(
+            $"No Archimedes water family with id '{familyId}'. Valid ids: {validIds}");
     }
 
     public static AssetLocation GetManagedBlockCode(string familyId, string flow, int height)

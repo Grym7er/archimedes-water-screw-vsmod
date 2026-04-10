@@ -117,8 +117,20 @@ internal static class WaterfallCompatPatch
             }
         }
 
+        // Broad fallback: scan all types across loaded assemblies, skipping well-known large
+        // system and game-engine assemblies that can never contain the Waterfall spill method.
         foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
+            string assemblyName = assembly.GetName().Name ?? string.Empty;
+            if (assemblyName.StartsWith("System", StringComparison.OrdinalIgnoreCase) ||
+                assemblyName.StartsWith("Microsoft", StringComparison.OrdinalIgnoreCase) ||
+                assemblyName.StartsWith("netstandard", StringComparison.OrdinalIgnoreCase) ||
+                assemblyName.StartsWith("Vintagestory", StringComparison.OrdinalIgnoreCase) ||
+                assemblyName.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             Type[] types;
             try
             {
