@@ -41,7 +41,7 @@ internal sealed class WaterfallCompatBridge : IDisposable
             return;
         }
 
-        harmony.PatchAll(typeof(WaterfallCompatPatch).Assembly);
+        harmony.CreateClassProcessor(typeof(WaterfallCompatPatch)).Patch();
         isPatched = true;
         ArchimedesScrewModSystem.LogVerboseOrNotification(api.Logger, "{0} [compat/waterfall] Compat patch set active", ArchimedesScrewModSystem.LogPrefix);
     }
