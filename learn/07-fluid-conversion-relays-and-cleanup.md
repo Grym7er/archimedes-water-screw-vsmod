@@ -86,3 +86,14 @@ Open `src/Blocks/BlockArchimedesWater.cs` and trace:
 - removal-to-manager notification in `NotifyManagerOnRemoval(...)` lines 9-38.
 
 Next: persistence, config live-tuning, and compatibility.
+
+## Relay Stability Heuristics (Controller-Local)
+
+Relay creation and release now include controller-local anti-oscillation guards:
+
+- recently released positions are briefly cooled down before being eligible for re-promotion,
+- candidate ordering is deterministic (distance first, then stable positional/key tiebreakers),
+- rejection reasons are tracked through perf counters for tuning.
+
+Important: ownership authority still lives in the global manager.  
+Cooldowns only affect local candidate selection; they do not redefine ownership truth.

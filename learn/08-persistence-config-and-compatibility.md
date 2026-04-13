@@ -86,3 +86,16 @@ Best practice shown here:
 See server startup + refresh in `StartServerSide(...)` lines 160-162 and delayed refresh callbacks in lines 217-223.
 
 Next: debugging workflow, testing checklist, and packaging.
+
+## Ownership Persistence vs Local Runtime Heuristics
+
+With the hybrid model, persistence boundaries are explicit:
+
+- persisted/global: ownership maps, controller snapshots, tracked anchors,
+- transient/local: short-lived controller cooldown memory and candidate suppression state.
+
+Why this split matters:
+
+- save files remain compact and deterministic,
+- restart/load behavior does not depend on transient anti-thrash memory,
+- local heuristics can evolve without migration risk to world data formats.

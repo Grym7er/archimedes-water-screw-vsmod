@@ -92,3 +92,22 @@ Add these two guardrails from this project:
 - periodic compaction of weak references (lines 269-287).
 
 Next: how fluid conversion, relay sources, and cleanup are implemented.
+
+## Updated Boundary Model (Global + Local)
+
+The manager remains authoritative for world truth and persistence, while controllers now own more transient decision logic.
+
+Global manager remains responsible for:
+
+- ownership authority and snapshots,
+- deterministic owner conflict resolution,
+- BFS traversal, caching, and global tick budgets,
+- save/load and post-load reactivation.
+
+Controller-local decision logic now includes:
+
+- relay promotion ordering,
+- unsupported-source release ordering,
+- local anti-oscillation cooldown gating for candidate reuse.
+
+This split keeps correctness centralized while making mechanic-specific behavior easier to extend.

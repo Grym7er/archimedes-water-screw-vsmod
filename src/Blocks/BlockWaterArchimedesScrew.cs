@@ -225,12 +225,23 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
         {
             splr.SendMessage(GlobalConstants.InfoLogChatGroup, message, EnumChatType.Notification);
 
-            if (api.ModLoader.GetModSystem<ArchimedesScrewModSystem>().Config.Water.DebugControllerStatsOnInteract &&
-                world.BlockAccessor.GetBlock(blockSel.Position) is BlockWaterArchimedesScrew clickedScrew &&
+            if (world.BlockAccessor.GetBlock(blockSel.Position) is BlockWaterArchimedesScrew clickedScrew &&
                 clickedScrew.IsIntakeBlock() &&
                 world.BlockAccessor.GetBlockEntity(blockSel.Position) is BlockEntityWaterArchimedesScrew controllerBe)
             {
-                controllerBe.LogDebugControllerStats();
+                splr.SendMessage(
+                    GlobalConstants.InfoLogChatGroup,
+                    controllerBe.GetCompactControllerStatusLine(),
+                    EnumChatType.Notification
+                );
+            }
+
+            if (api.ModLoader.GetModSystem<ArchimedesScrewModSystem>().Config.Water.DebugControllerStatsOnInteract &&
+                world.BlockAccessor.GetBlock(blockSel.Position) is BlockWaterArchimedesScrew debugClickedScrew &&
+                debugClickedScrew.IsIntakeBlock() &&
+                world.BlockAccessor.GetBlockEntity(blockSel.Position) is BlockEntityWaterArchimedesScrew debugControllerBe)
+            {
+                debugControllerBe.LogDebugControllerStats();
             }
         }
 

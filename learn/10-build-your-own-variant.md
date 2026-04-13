@@ -90,3 +90,15 @@ Use these actions to build your own mod from scratch:
 5. Add load/performance guardrails before release.
 
 You now have a reusable blueprint for advanced Vintage Story code mods.
+
+## Variant Extension Seam: Local Participation Contract
+
+When adding a new water-transporting mechanic, avoid editing global ownership logic first.
+
+Use this order:
+
+1. implement local participation checks (connectivity/relay eligibility) behind a small adapter/contract,
+2. wire controller-local ordering/cooldown behavior for the new mechanic,
+3. reuse manager ownership APIs for assignment/release/persistence.
+
+This lets new mechanics plug in like a capability module while preserving the same global correctness guarantees.
