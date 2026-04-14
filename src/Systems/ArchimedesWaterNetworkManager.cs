@@ -6,35 +6,11 @@ using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using Vintagestory.API.Util;
-using System.IO;
-using System.Text.Json;
 
 namespace ArchimedesScrew;
 
 public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 {
-    // #region agent log
-    private const string DebugLogPath = "/home/dewet/Documents/projects/VintageStoryMods/archimedes_screw/.cursor/debug-bdddf0.log";
-    private static void DebugLog(string runId, string hypothesisId, string location, string message, object data)
-    {
-        try
-        {
-            var payload = new
-            {
-                sessionId = "bdddf0",
-                runId,
-                hypothesisId,
-                location,
-                message,
-                data,
-                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-            File.AppendAllText(DebugLogPath, JsonSerializer.Serialize(payload) + "\n");
-        }
-        catch { }
-    }
-    // #endregion
-
     private const string SaveKeyScrewBlocks = "archimedes_screw/screwblocks";
     private const string SaveKeyControllerPositions = "archimedes_screw/controllerpositions";
     private const string SaveKeyControllerOwned = "archimedes_screw/controllerowned";
@@ -766,9 +742,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         bool changed = false;
         string key = PosKey(pos);
-        // #region agent log
-        sourceOwnerByPos.TryGetValue(key, out string? existingOwnerBefore);
-        // #endregion
         if (!sourceOwnerByPos.TryGetValue(key, out string? existingOwner) ||
             !string.Equals(existingOwner, ownerId, StringComparison.Ordinal))
         {
@@ -787,22 +760,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             SetManagedSource(pos, familyId);
             changed = true;
         }
-
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H2",
-            "ArchimedesWaterNetworkManager.cs:EnsureSourceOwned",
-            "ensure source owned assignment",
-            new
-            {
-                key,
-                ownerId,
-                existingOwnerBefore,
-                changed
-            }
-        );
-        // #endregion
 
         return changed;
     }
@@ -891,21 +848,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         sourceOwnerByPos.Remove(key);
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H5",
-            "ArchimedesWaterNetworkManager.cs:ReleaseSourceOwner",
-            "release source owner",
-            new
-            {
-                key,
-                pos = pos.ToString(),
-                ownerId,
-                previousOwner = owner
-            }
-        );
-        // #endregion
         RemoveOwnedPosFromSnapshot(ownerId, pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsArchimedesWaterBlock(fluidBlock))
@@ -978,28 +920,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                         familyId,
                         reason: "cleanup-unowned adoption"))
                 {
-                    // #region agent log
-                    DebugLog(
-                        "repro-intake-in-stream",
-                        "H6",
-                        "ArchimedesWaterNetworkManager.cs:CleanupUnownedManagedSourcesAroundAnchors",
-                        "cleanup adopted unowned managed source",
-                        new { key, pos = pos.ToString(), anchors = anchors.Count, budget, familyId }
-                    );
-                    // #endregion
                     unownedCleanupCooldownUntilMsByKey.Remove(key);
                     continue;
                 }
 
-                // #region agent log
-                DebugLog(
-                    "repro-intake-in-stream",
-                    "H6",
-                    "ArchimedesWaterNetworkManager.cs:CleanupUnownedManagedSourcesAroundAnchors",
-                    "cleanup removing unowned managed source",
-                    new { key, pos = pos.ToString(), anchors = anchors.Count, budget }
-                );
-                // #endregion
                 SuppressRemovalNotification(key);
                 RemoveFluidAndNotifyNeighbours(pos);
                 unownedCleanupCooldownUntilMsByKey[key] = nowMs + UnownedCleanupRetryCooldownMs;
@@ -1092,6 +1016,108 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return total;
     }
 
+    /// <summary>
+    /// BFS over the connected fluid component (vanilla or managed) for <paramref name="familyId"/>, starting from
+    /// probe origins and their face neighbors. Claims vanilla height-7 sources via the player path, and assigns
+    /// <paramref name="ownerHintControllerId"/> to <b>unowned</b> managed self-sustaining sources (fluid sim / partial
+    /// conversion can leave <c>archimedes-water-*</c> still blocks that <see cref="TryConvertVanillaSourceForPlayer"/>
+    /// skips as "not vanilla").
+    /// </summary>
+    public int SeizeVanillaSourcesInConnectedFamilyFluid(
+        IReadOnlyList<BlockPos> probeOrigins,
+        string familyId,
+        string? ownerHintControllerId,
+        int maxVisit = MaxBfsVisited)
+    {
+        if (probeOrigins == null || probeOrigins.Count == 0)
+        {
+            return 0;
+        }
+
+        IBlockAccessor ba = api.World.BlockAccessor;
+        HashSet<string> visited = new(StringComparer.Ordinal);
+        Queue<BlockPos> queue = new();
+
+        void TryEnqueue(BlockPos p)
+        {
+            string key = PosKey(p);
+            if (visited.Contains(key))
+            {
+                return;
+            }
+
+            Block fluid = ba.GetBlock(p, BlockLayersAccess.Fluid);
+            if (!IsFamilyLiquidBlock(fluid, familyId))
+            {
+                return;
+            }
+
+            visited.Add(key);
+            queue.Enqueue(p.Copy());
+        }
+
+        foreach (BlockPos origin in probeOrigins)
+        {
+            TryEnqueue(origin);
+            foreach (BlockFacing face in BlockFacing.ALLFACES)
+            {
+                TryEnqueue(origin.AddCopy(face));
+            }
+        }
+
+        if (queue.Count == 0)
+        {
+            return 0;
+        }
+
+        int seized = 0;
+        int dequeued = 0;
+        while (queue.Count > 0 && dequeued < maxVisit)
+        {
+            BlockPos p = queue.Dequeue();
+            dequeued++;
+
+            Block fluid = ba.GetBlock(p, BlockLayersAccess.Fluid);
+            string pkey = PosKey(p);
+            bool claimed = false;
+            if (IsVanillaSelfSustainingSourceForFamily(fluid, familyId) &&
+                TryConvertVanillaSourceForPlayer(p, familyId, "connected-family-fluid sweep (drain context)"))
+            {
+                claimed = true;
+            }
+            else if (!string.IsNullOrWhiteSpace(ownerHintControllerId) &&
+                     IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
+                     !sourceOwnerByPos.ContainsKey(pkey))
+            {
+                // Unowned archimedes still blocks (not vanilla water-*) need ownership so drain can release them.
+                if (EnsureSourceOwned(ownerHintControllerId, p, familyId))
+                {
+                    claimed = true;
+                }
+            }
+
+            if (claimed)
+            {
+                seized++;
+            }
+
+            foreach (BlockFacing face in BlockFacing.ALLFACES)
+            {
+                TryEnqueue(p.AddCopy(face));
+            }
+        }
+
+        return seized;
+    }
+
+    private bool IsFamilyLiquidBlock(Block block, string familyId)
+    {
+        return (TryResolveManagedWaterFamily(block, out string managedId) &&
+                string.Equals(managedId, familyId, StringComparison.Ordinal)) ||
+               (TryResolveVanillaWaterFamily(block, out string vanillaId) &&
+                string.Equals(vanillaId, familyId, StringComparison.Ordinal));
+    }
+
     public bool TryConvertVanillaSource(BlockPos pos, string familyId, string? ownerHintControllerId = null)
     {
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
@@ -1147,15 +1173,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         SetManagedWaterVariant(pos, familyId, "still", 7, triggerUpdates: false);
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H7",
-            "ArchimedesWaterNetworkManager.cs:TryConvertVanillaSourceForPlayer",
-            "player path converts vanilla source to managed",
-            new { pos = pos.ToString(), familyId, reason }
-        );
-        // #endregion
         AssignConnectedSourceToActiveControllers(pos, reason);
 
         // Apply fluid reactions after assignment to avoid the source->flowing race.
@@ -1217,27 +1234,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         if (!sourceOwnerByPos.Remove(key, out string? ownerId))
         {
-            // #region agent log
-            DebugLog(
-                "repro-intake-in-stream",
-                "H1",
-                "ArchimedesWaterNetworkManager.cs:OnManagedWaterRemoved",
-                "managed water removed without owner",
-                new { key, pos = pos.ToString() }
-            );
-            // #endregion
             return;
         }
 
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H1",
-            "ArchimedesWaterNetworkManager.cs:OnManagedWaterRemoved",
-            "managed water removed with owner",
-            new { key, pos = pos.ToString(), ownerId }
-        );
-        // #endregion
         RemoveOwnedPosFromSnapshot(ownerId, pos);
         if (loadedControllers.TryGetValue(ownerId, out WeakReference<BlockEntityWaterArchimedesScrew>? reference) &&
             reference.TryGetTarget(out BlockEntityWaterArchimedesScrew? controller))
@@ -1606,15 +1605,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private void RemoveFluidAndNotifyNeighbours(BlockPos pos)
     {
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H8",
-            "ArchimedesWaterNetworkManager.cs:RemoveFluidAndNotifyNeighbours",
-            "manager removed fluid cell",
-            new { pos = pos.ToString() }
-        );
-        // #endregion
         api.World.BlockAccessor.SetBlock(0, pos, BlockLayersAccess.Fluid);
         NotifyNeighboursOfFluidRemoval(pos);
     }

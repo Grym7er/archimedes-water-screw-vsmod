@@ -1,35 +1,11 @@
 using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 using Vintagestory.GameContent;
-using System.IO;
-using System.Text.Json;
 
 namespace ArchimedesScrew;
 
 internal static class ArchimedesWaterBlockHelper
 {
-    // #region agent log
-    private const string DebugLogPath = "/home/dewet/Documents/projects/VintageStoryMods/archimedes_screw/.cursor/debug-bdddf0.log";
-    private static void DebugLog(string runId, string hypothesisId, string location, string message, object data)
-    {
-        try
-        {
-            var payload = new
-            {
-                sessionId = "bdddf0",
-                runId,
-                hypothesisId,
-                location,
-                message,
-                data,
-                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-            File.AppendAllText(DebugLogPath, JsonSerializer.Serialize(payload) + "\n");
-        }
-        catch { }
-    }
-    // #endregion
-
     public static void NotifyManagerOnRemoval(IWorldAccessor world, BlockPos pos, Block removedBlock)
     {
         if (world.Side != EnumAppSide.Server)
@@ -44,24 +20,6 @@ internal static class ArchimedesWaterBlockHelper
         }
 
         Block replacementFluid = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        // #region agent log
-        bool replacementIsManaged = manager.IsArchimedesWaterBlock(replacementFluid);
-        bool removedIsManaged = manager.IsArchimedesWaterBlock(removedBlock);
-        DebugLog(
-            "repro-intake-in-stream",
-            "H1",
-            "BlockArchimedesWater.cs:NotifyManagerOnRemoval",
-            "managed water removed callback",
-            new
-            {
-                pos = pos.ToString(),
-                removedCode = removedBlock.Code?.ToString(),
-                replacementFluidCode = replacementFluid.Code?.ToString(),
-                removedIsManaged,
-                replacementIsManaged
-            }
-        );
-        // #endregion
         // Keep ownership stable across managed variant transitions (e.g. still-7 -> still-6).
         // The old block is "removed" by fluid simulation, but this is not true source loss.
         if (manager.IsArchimedesWaterBlock(replacementFluid) &&
@@ -98,20 +56,6 @@ internal static class ArchimedesWaterBlockHelper
             return;
         }
 
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H7",
-            "BlockArchimedesWater.cs:TryConvertNeighbourSource",
-            "neighbor conversion attempt from managed adjacency",
-            new
-            {
-                neibpos = neibpos.ToString(),
-                referencePos = referencePos.ToString(),
-                familyId
-            }
-        );
-        // #endregion
         manager.TryConvertVanillaSourceForPlayer(
             neibpos,
             familyId,

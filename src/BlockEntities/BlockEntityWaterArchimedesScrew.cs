@@ -6,35 +6,11 @@ using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Util;
 using Vintagestory.GameContent.Mechanics;
-using System.IO;
-using System.Text.Json;
 
 namespace ArchimedesScrew;
 
 public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 {
-    // #region agent log
-    private const string DebugLogPath = "/home/dewet/Documents/projects/VintageStoryMods/archimedes_screw/.cursor/debug-bdddf0.log";
-    private static void DebugLog(string runId, string hypothesisId, string location, string message, object data)
-    {
-        try
-        {
-            var payload = new
-            {
-                sessionId = "bdddf0",
-                runId,
-                hypothesisId,
-                location,
-                message,
-                data,
-                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-            File.AppendAllText(DebugLogPath, JsonSerializer.Serialize(payload) + "\n");
-        }
-        catch { }
-    }
-    // #endregion
-
     private const string OwnedPositionsKey = "ownedPositions";
     private const string RelayPositionsKey = "relayPositions";
     private const string ControllerIdKey = "controllerId";
@@ -482,6 +458,21 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
+            // Unpowered draining releases owned managed sources each tick. Seize via mixed vanilla+managed
+            // fluid BFS from seed / lastSeed / owned keys (no managed-only BFS anchor required).
+            // Do NOT call EnsureSeedSource here: it refills the outlet via SetManagedSource and blocks drain.
+            if (!evaluation.IsPowered &&
+                evaluation.FamilyId != null &&
+                evaluation.SeedPos != null &&
+                waterManager != null &&
+                waterConfig != null)
+            {
+                waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
+                    BuildDrainProbeOriginPositions(evaluation.SeedPos),
+                    evaluation.FamilyId,
+                    ControllerId);
+            }
+
             HandleInvalidControllerState(evaluation, fastMs, idleMs, forceDrainWhenInvalid: false);
             return;
         }
@@ -509,11 +500,21 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 ControllerId
             );
 
+        convertedVanilla += waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
+            BuildDrainProbeOriginPositions(seedPos),
+            familyId,
+            ControllerId);
+
         bool canSkipConnectivityScan =
             CanSkipConnectivityScan(ensuredSeed, convertedVanilla);
 
         if (canSkipConnectivityScan)
         {
+            // Low-cadence skips relay/full scan but must still drain: otherwise consistent owned
+            // sources (debugwater green) can sit forever with no release tick.
+            List<ArchimedesOutletState> skipPathSeeds =
+                ResolveSupportingSeeds(seedPos, connectedResult.VisitedKeys);
+            DrainUnsupportedSources(skipPathSeeds, connectedResult.VisitedKeys, string.Empty);
             lowCadenceScanSkipsRemaining--;
             ArchimedesPerf.AddCount("controller.connectivityScan.skipped");
             ScheduleNextWaterTick(ArchimedesScrewControllerSchedule.LowCadence, fastMs, idleMs);
@@ -539,11 +540,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         );
 
         int removedDisconnected = 0;
-        if (!isTruncated)
-        {
-            List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWaterKeys);
-            removedDisconnected = DrainUnsupportedSources(supportingSeeds, connectedWaterKeys, string.Empty);
-        }
+        List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWaterKeys);
+        removedDisconnected = DrainUnsupportedSources(
+            supportingSeeds,
+            connectedWaterKeys,
+            isTruncated ? "managed-bfs-truncated" : string.Empty);
 
         if (ensuredSeed)
         {
@@ -663,24 +664,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         float currentPower = GetCurrentMechanicalPower();
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H3",
-            "BlockEntityWaterArchimedesScrew.cs:EvaluateController",
-            "controller evaluation",
-            new
-            {
-                controllerId = ControllerId,
-                pos = Pos.ToString(),
-                isAssemblyValid = assemblyStatus.IsAssemblyValid,
-                isPowered = assemblyStatus.IsPowered,
-                familyId,
-                seedPos = seedPos.ToString(),
-                currentPower
-            }
-        );
-        // #endregion
         return new ControllerEvaluation(true, assemblyStatus.IsPowered, currentPower, string.Empty, familyId, seedPos);
     }
 
@@ -710,6 +693,23 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         return supporting;
+    }
+
+    private List<BlockPos> BuildDrainProbeOriginPositions(BlockPos primarySeed)
+    {
+        List<BlockPos> list = new();
+        list.Add(primarySeed.Copy());
+        if (lastSeedPos != null)
+        {
+            list.Add(lastSeedPos.Copy());
+        }
+
+        foreach (BlockPos p in ownedPositions.Values)
+        {
+            list.Add(p.Copy());
+        }
+
+        return list;
     }
 
     private bool EnsureSeedSource(BlockPos seedPos, string familyId)
@@ -1280,23 +1280,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return 0;
         }
 
-        // #region agent log
-        DebugLog(
-            "repro-intake-in-stream",
-            "H4",
-            "BlockEntityWaterArchimedesScrew.cs:DrainUnsupportedSources",
-            "drain unsupported candidates",
-            new
-            {
-                controllerId = ControllerId,
-                toRelease = toRelease.Count,
-                ownedCount = ownedPositions.Count,
-                reason,
-                ignoreGrace
-            }
-        );
-        // #endregion
-
         ArchimedesPerf.AddCount("controller.drainUnsupported.candidates", toRelease.Count);
 
         List<BlockPos> origins = new(referenceSeeds.Count);
@@ -1336,22 +1319,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             BlockPos pos = releaseCandidates[i];
             string key = ArchimedesWaterNetworkManager.PosKey(pos);
-            // #region agent log
-            DebugLog(
-                "repro-intake-in-stream",
-                "H5",
-                "BlockEntityWaterArchimedesScrew.cs:DrainUnsupportedSources",
-                "releasing unsupported owned source",
-                new
-                {
-                    controllerId = ControllerId,
-                    key,
-                    pos = pos.ToString(),
-                    releaseIndex = i,
-                    releaseCount
-                }
-            );
-            // #endregion
             ownedPositions.Remove(key);
             relayOwnedPositions.Remove(key);
             NoteLocalSourceCooldown(key);
