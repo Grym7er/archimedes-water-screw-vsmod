@@ -458,8 +458,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
-            // Unpowered draining releases owned managed sources each tick. Seize via mixed vanilla+managed
-            // fluid BFS from seed / lastSeed / owned keys (no managed-only BFS anchor required).
+            // Unpowered draining releases owned managed sources each tick. Keep seizure active for vanilla
+            // sources (e.g. player bucket placements) but disable managed self-sustaining adoption here to
+            // prevent immediate re-ownership thrash of freshly drained cells.
             // Do NOT call EnsureSeedSource here: it refills the outlet via SetManagedSource and blocks drain.
             if (!evaluation.IsPowered &&
                 evaluation.FamilyId != null &&
@@ -467,10 +468,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 waterManager != null &&
                 waterConfig != null)
             {
-                waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
+                int seized = waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
                     BuildDrainProbeOriginPositions(evaluation.SeedPos),
                     evaluation.FamilyId,
-                    ControllerId);
+                    ControllerId,
+                    adoptManagedSelfSustaining: false);
             }
 
             HandleInvalidControllerState(evaluation, fastMs, idleMs, forceDrainWhenInvalid: false);
@@ -1259,7 +1261,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             ArchimedesPerf.AddCount("controller.drainUnsupported.fallbackNoUnstable");
         }
-
         for (int i = 0; i < releaseCount; i++)
         {
             BlockPos pos = releaseCandidates[i];

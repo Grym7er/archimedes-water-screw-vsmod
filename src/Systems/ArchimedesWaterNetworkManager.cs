@@ -17,11 +17,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private const int MaxBfsVisited = 4096;
     private const int UnownedCleanupRetryCooldownMs = 3000;
+    private const int ManagedAdoptionCooldownAfterReleaseMs = 2500;
 
     private readonly ICoreServerAPI api;
     private readonly ArchimedesScrewConfig config;
 
     private readonly Dictionary<string, string> sourceOwnerByPos = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> managedAdoptionCooldownUntilMsByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> unownedCleanupCooldownUntilMsByKey = new(StringComparer.Ordinal);
     private readonly HashSet<string> screwBlockKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> controllerPosById = new(StringComparer.Ordinal);
@@ -742,6 +744,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         bool changed = false;
         string key = PosKey(pos);
+        managedAdoptionCooldownUntilMsByKey.Remove(key);
         if (!sourceOwnerByPos.TryGetValue(key, out string? existingOwner) ||
             !string.Equals(existingOwner, ownerId, StringComparison.Ordinal))
         {
@@ -848,6 +851,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         sourceOwnerByPos.Remove(key);
+        managedAdoptionCooldownUntilMsByKey[key] = Environment.TickCount64 + ManagedAdoptionCooldownAfterReleaseMs;
         RemoveOwnedPosFromSnapshot(ownerId, pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsArchimedesWaterBlock(fluidBlock))
@@ -1027,6 +1031,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         IReadOnlyList<BlockPos> probeOrigins,
         string familyId,
         string? ownerHintControllerId,
+        bool adoptManagedSelfSustaining = true,
         int maxVisit = MaxBfsVisited)
     {
         if (probeOrigins == null || probeOrigins.Count == 0)
@@ -1085,14 +1090,21 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             {
                 claimed = true;
             }
-            else if (!string.IsNullOrWhiteSpace(ownerHintControllerId) &&
+            else if (adoptManagedSelfSustaining &&
+                     !string.IsNullOrWhiteSpace(ownerHintControllerId) &&
                      IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
                      !sourceOwnerByPos.ContainsKey(pkey))
             {
-                // Unowned archimedes still blocks (not vanilla water-*) need ownership so drain can release them.
-                if (EnsureSourceOwned(ownerHintControllerId, p, familyId))
+                if (IsManagedAdoptionCoolingDown(pkey, out _))
                 {
-                    claimed = true;
+                }
+                else
+                {
+                    // Unowned archimedes still blocks (not vanilla water-*) need ownership so drain can release them.
+                    if (EnsureSourceOwned(ownerHintControllerId, p, familyId))
+                    {
+                        claimed = true;
+                    }
                 }
             }
 
@@ -1421,10 +1433,16 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private bool TryAdoptManagedSelfSustainingSource(BlockPos pos, string familyId, string? ownerHintControllerId)
     {
+        string key = PosKey(pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsManagedSelfSustainingSourceForFamily(fluidBlock, familyId) ||
-            sourceOwnerByPos.ContainsKey(PosKey(pos)) ||
+            sourceOwnerByPos.ContainsKey(key) ||
             !HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(pos, familyId))
+        {
+            return false;
+        }
+
+        if (IsManagedAdoptionCoolingDown(key, out _))
         {
             return false;
         }
@@ -1445,6 +1463,25 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         return assigned;
+    }
+
+    private bool IsManagedAdoptionCoolingDown(string key, out long cooldownRemainingMs)
+    {
+        cooldownRemainingMs = 0;
+        if (!managedAdoptionCooldownUntilMsByKey.TryGetValue(key, out long untilMs))
+        {
+            return false;
+        }
+
+        long nowMs = Environment.TickCount64;
+        if (untilMs <= nowMs)
+        {
+            managedAdoptionCooldownUntilMsByKey.Remove(key);
+            return false;
+        }
+
+        cooldownRemainingMs = untilMs - nowMs;
+        return true;
     }
 
     private void RemoveOrphanedManagedSource(BlockPos pos, string key)
