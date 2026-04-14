@@ -492,11 +492,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                IsSourceHeight(block.Variant?["height"]);
     }
 
-    public bool IsArchimedesLowestFlowingBlock(Block block)
+    public bool IsArchimedesRelayFlowCandidate(Block block)
     {
         return IsArchimedesWaterBlock(block) &&
                !string.Equals(block.Variant?["flow"], "still", StringComparison.Ordinal) &&
-               string.Equals(block.Variant?["height"], "1", StringComparison.Ordinal);
+               string.Equals(block.Variant?["height"], "6", StringComparison.Ordinal);
     }
 
     public bool TryGetSourceOwner(BlockPos pos, out string ownerId)

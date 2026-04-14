@@ -556,7 +556,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             convertedVanilla,
             removedDisconnected,
             relayCreated,
-            relayTrimmed
+            relayTrimmed,
+            relayCap
         );
         long churnDelta = Math.Max(0, ownershipChurnTotal - lastOwnershipChurnSample);
         lastOwnershipChurnSample = ownershipChurnTotal;
@@ -594,9 +595,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     {
         int relayCreated = 0;
         int relayTrimmed = 0;
+        bool relayDue = IsRelayCreationDue();
         if (waterConfig!.EnableRelaySources && !isTruncated)
         {
-            if (IsRelayCreationDue())
+            if (relayDue)
             {
                 relayCreated = CreateRelaySources(seedPos, familyId, connectedWaterKeys, connectedWater, relayCap, relayWorkBudget);
                 ScheduleNextRelayCreationTick(fastMs);
@@ -617,15 +619,21 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int convertedVanilla,
         int removedDisconnected,
         int relayCreated,
-        int relayTrimmed
+        int relayTrimmed,
+        int relayCap
     )
     {
+        bool relayExpansionPending =
+            waterConfig != null &&
+            waterConfig.EnableRelaySources &&
+            relayOwnedPositions.Count < relayCap;
         bool busyWork =
             ensuredSeed ||
             convertedVanilla > 0 ||
             removedDisconnected > 0 ||
             relayCreated > 0 ||
             relayTrimmed > 0 ||
+            relayExpansionPending ||
             ownedPositions.Count == 0;
         return busyWork
             ? ArchimedesScrewControllerSchedule.HighCadence
@@ -855,14 +863,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return 0;
         }
 
-        int stride = Math.Max(2, waterConfig.RelayStrideBlocks);
         Dictionary<string, int> distanceByKey = BuildDistanceMap(seedPos, connectedWaterKeys);
-        Dictionary<string, int> nearestRelayWaterDistanceByKey = BuildNearestRelayWaterDistanceMap(connectedWaterKeys, connectedWater);
         int candidatesExamined = 0;
         int rejectedCooldown = 0;
         int rejectedOtherOwner = 0;
-        int rejectedRelayStride = 0;
         int rejectedNotCandidate = 0;
+        int rejectedAssignFailed = 0;
         int created = 0;
         int budget = Math.Max(1, perTickBudget);
         int maxCreateAllowed = Math.Min(budget, relayCap - relayOwnedPositions.Count);
@@ -909,15 +915,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 continue;
             }
 
-            if (nearestRelayWaterDistanceByKey.TryGetValue(key, out int waterDistanceToNearestRelay) &&
-                waterDistanceToNearestRelay < stride)
-            {
-                rejectedRelayStride++;
-                continue;
-            }
-
             if (!waterManager.AssignOwnedSourceForController(ControllerId, pos, familyId))
             {
+                rejectedAssignFailed++;
                 continue;
             }
 
@@ -931,69 +931,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ArchimedesPerf.AddCount("controller.relayPromotions", created);
         ArchimedesPerf.AddCount("controller.relayCandidates.rejectedCooldown", rejectedCooldown);
         ArchimedesPerf.AddCount("controller.relayCandidates.rejectedOtherOwner", rejectedOtherOwner);
-        ArchimedesPerf.AddCount("controller.relayCandidates.rejectedStride", rejectedRelayStride);
         ArchimedesPerf.AddCount("controller.relayCandidates.rejectedNotCandidate", rejectedNotCandidate);
+        ArchimedesPerf.AddCount("controller.relayCandidates.rejectedAssignFailed", rejectedAssignFailed);
         if (created > 0)
         {
             UpdateSnapshot();
         }
 
         return created;
-    }
-
-    private Dictionary<string, int> BuildNearestRelayWaterDistanceMap(
-        HashSet<string> connectedWaterKeys,
-        Dictionary<string, BlockPos> connectedWater)
-    {
-        Dictionary<string, int> nearestDistanceByKey = new(StringComparer.Ordinal);
-        if (connectedWaterKeys.Count == 0 || relayOwnedPositions.Count == 0)
-        {
-            return nearestDistanceByKey;
-        }
-
-        Queue<BlockPos> queue = new();
-        foreach ((string relayKey, BlockPos relayPos) in relayOwnedPositions)
-        {
-            if (!connectedWaterKeys.Contains(relayKey))
-            {
-                continue;
-            }
-
-            if (nearestDistanceByKey.TryAdd(relayKey, 0))
-            {
-                queue.Enqueue(relayPos.Copy());
-            }
-        }
-
-        while (queue.Count > 0)
-        {
-            BlockPos current = queue.Dequeue();
-            string currentKey = ArchimedesWaterNetworkManager.PosKey(current);
-            if (!nearestDistanceByKey.TryGetValue(currentKey, out int currentDistance))
-            {
-                continue;
-            }
-
-            foreach (BlockFacing face in BlockFacing.ALLFACES)
-            {
-                BlockPos next = current.AddCopy(face);
-                string nextKey = ArchimedesWaterNetworkManager.PosKey(next);
-                if (!connectedWaterKeys.Contains(nextKey) || nearestDistanceByKey.ContainsKey(nextKey))
-                {
-                    continue;
-                }
-
-                if (!connectedWater.TryGetValue(nextKey, out BlockPos? canonicalNextPos))
-                {
-                    continue;
-                }
-
-                nearestDistanceByKey[nextKey] = currentDistance + 1;
-                queue.Enqueue(canonicalNextPos.Copy());
-            }
-        }
-
-        return nearestDistanceByKey;
     }
 
     private int TrimRelaySourcesToCap(BlockPos seedPos, int relayCap, int perTickBudget)
@@ -1106,7 +1051,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private IEnumerable<KeyValuePair<string, int>> OrderRelayPromotionCandidates(Dictionary<string, int> distanceByKey)
     {
         return distanceByKey
-            .OrderByDescending(p => p.Value)
+            .OrderBy(p => p.Value)
             .ThenByDescending(p => TryParseYFromPosKey(p.Key))
             .ThenBy(p => p.Key, StringComparer.Ordinal);
     }
@@ -1115,7 +1060,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     {
         releaseCandidates.Sort((left, right) =>
         {
-            int distCmp = MinDistanceSquared(right, origins).CompareTo(MinDistanceSquared(left, origins));
+            int distCmp = MinDistanceSquared(left, origins).CompareTo(MinDistanceSquared(right, origins));
             if (distCmp != 0)
             {
                 return distCmp;

@@ -38,6 +38,7 @@ Allows gravity-fed pipes. Connect to a reservoir and open, works like an archime
 # Implementation plan:
 1. First, we need to re-do relay creation logic to work as follows:
     - in stead of making it at flowing-level-1, make flowing-level-6 the relay candidates.
+    - prioritize relay creation nearest-first from the controller seed (instead of farthest-first).
 1. Start with the "archimedes source blocks fills up spaces with relays until full:
     - While there is relay budget
     - locked at idle-speed:

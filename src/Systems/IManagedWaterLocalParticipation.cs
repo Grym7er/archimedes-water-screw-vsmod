@@ -25,11 +25,11 @@ internal sealed class DefaultManagedWaterLocalParticipation : IManagedWaterLocal
     )
     {
         Block fluid = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        if (!manager.IsArchimedesLowestFlowingBlock(fluid))
+        if (!manager.IsArchimedesRelayFlowCandidate(fluid))
         {
             return false;
         }
 
-        return ArchimedesRelayAdjacency.IsRelaySupportAndAdjacentWhitelistSatisfied(world, pos);
+        return true;
     }
 }

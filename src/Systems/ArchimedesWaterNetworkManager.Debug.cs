@@ -27,7 +27,10 @@ public sealed partial class ArchimedesWaterNetworkManager
                 {
                     BlockPos pos = new(x, y, z);
                     Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-                    if (!IsArchimedesSelfSustainingSourceBlock(fluid))
+                    bool isDebugSource =
+                        IsArchimedesSelfSustainingSourceBlock(fluid) ||
+                        IsArchimedesRelayFlowCandidate(fluid);
+                    if (!isDebugSource)
                     {
                         continue;
                     }
@@ -85,7 +88,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                 {
                     BlockPos pos = new(x, y, z);
                     Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-                    if (!IsArchimedesLowestFlowingBlock(fluid) ||
+                    if (!IsArchimedesRelayFlowCandidate(fluid) ||
                         !ArchimedesRelayAdjacency.IsRelaySupportAndAdjacentWhitelistSatisfied(api.World, pos))
                     {
                         continue;

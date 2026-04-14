@@ -52,7 +52,6 @@ See the critical order in `TryConvertVanillaSource(...)`:
 
 Relay logic is configurable and allows long aqueduct-like flows:
 
-- spacing via `RelayStrideBlocks`,
 - cap via `MaxRelaySourcesPerController`,
 - scaling with mechanical power (`RequiredMechPowerForMaxRelay`),
 - anti-thrash via hysteresis (`RelayPowerHysteresisPct`).

@@ -10,7 +10,6 @@
     "minimumNetworkSpeed": 0.001,
     "maxVanillaConversionPasses": 32,
     "enableRelaySources": true,
-    "relayStrideBlocks": 6,
     "maxRelayPromotionsPerTick": 1,
     "maxRelaySourcesPerController": 12,
     "requiredMechPowerForMaxRelay": 0.5,

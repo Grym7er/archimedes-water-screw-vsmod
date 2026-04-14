@@ -98,7 +98,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     {
         ArchimedesScrewConfig.WaterConfig w = config.Water;
         api.Logger.Notification(
-            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, enableRelaySources={10}, relayStrideBlocks={11}, maxRelayPromotionsPerTick={12}, maxRelaySourcesPerController={13}, requiredMechPowerForMaxRelay={14}, relayPowerHysteresisPct={15}, debugControllerStatsOnInteract={16}, enableWaterfallCompat={17}, waterfallCompatDebug={18}, verboseDebug={19}",
+            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, enableRelaySources={10}, maxRelayPromotionsPerTick={11}, maxRelaySourcesPerController={12}, requiredMechPowerForMaxRelay={13}, relayPowerHysteresisPct={14}, debugControllerStatsOnInteract={15}, enableWaterfallCompat={16}, waterfallCompatDebug={17}, verboseDebug={18}",
             LogPrefix,
             w.FastTickMs,
             w.IdleTickMs,
@@ -110,7 +110,6 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             w.MinimumNetworkSpeed,
             w.MaxVanillaConversionPasses,
             w.EnableRelaySources,
-            w.RelayStrideBlocks,
             w.MaxRelayPromotionsPerTick,
             w.MaxRelaySourcesPerController,
             w.RequiredMechPowerForMaxRelay,
@@ -567,9 +566,6 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 return true;
             case "ENABLE_RELAY_SOURCES":
                 target.EnableRelaySources = tree.GetBool("value");
-                return true;
-            case "RELAY_STRIDE_BLOCKS":
-                target.RelayStrideBlocks = tree.GetInt("value");
                 return true;
             case "MAX_RELAY_PROMOTIONS_PER_TICK":
                 target.MaxRelayPromotionsPerTick = tree.GetInt("value");

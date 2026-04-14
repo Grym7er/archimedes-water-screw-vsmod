@@ -26,7 +26,7 @@ public sealed class ArchimedesScrewConfig
         public int AssemblyAnalysisCacheMs { get; set; } = 120;
 
         /// <summary>
-        /// How many owned Archimedes sources to remove per fast tick when draining (farthest from reference first).
+        /// How many owned Archimedes sources to remove per fast tick when draining (nearest to reference first).
         /// </summary>
         public int MaxBlocksPerStep { get; set; } = 1;
 
@@ -43,11 +43,6 @@ public sealed class ArchimedesScrewConfig
         /// Enables/disables relay source creation for long-distance aqueduct support.
         /// </summary>
         public bool EnableRelaySources { get; set; } = true;
-
-        /// <summary>
-        /// Desired spacing in blocks between relay source opportunities along connected flow.
-        /// </summary>
-        public int RelayStrideBlocks { get; set; } = 6;
 
         /// <summary>
         /// Max relay source promotions (and trims) per controller tick.
@@ -104,7 +99,6 @@ public sealed class ArchimedesScrewConfig
             MinimumNetworkSpeed = source.MinimumNetworkSpeed;
             MaxVanillaConversionPasses = source.MaxVanillaConversionPasses;
             EnableRelaySources = source.EnableRelaySources;
-            RelayStrideBlocks = source.RelayStrideBlocks;
             MaxRelayPromotionsPerTick = source.MaxRelayPromotionsPerTick;
             MaxRelaySourcesPerController = source.MaxRelaySourcesPerController;
             RequiredMechPowerForMaxRelay = source.RequiredMechPowerForMaxRelay;
