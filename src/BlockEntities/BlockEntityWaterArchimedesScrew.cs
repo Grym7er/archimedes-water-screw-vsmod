@@ -349,6 +349,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             string key = ArchimedesWaterNetworkManager.PosKey(ownedPos);
             NoteLocalSourceCooldown(key);
+            waterManager.MarkDrainQuarantine(ownedPos);
             waterManager.ReleaseOwnedSourceForController(ControllerId, ownedPos);
             ownershipChurnTotal++;
         }
@@ -971,6 +972,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             relayOwnedPositions.Remove(key);
             ownedPositions.Remove(key);
             NoteLocalSourceCooldown(key);
+            waterManager.MarkDrainQuarantine(pos);
             waterManager.ReleaseOwnedSourceForController(ControllerId, pos);
             ownershipChurnTotal++;
         }
@@ -1276,6 +1278,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             ownedPositions.Remove(key);
             relayOwnedPositions.Remove(key);
             NoteLocalSourceCooldown(key);
+            waterManager.MarkDrainQuarantine(pos);
             waterManager.ReleaseOwnedSourceForController(ControllerId, pos);
             ownershipChurnTotal++;
         }

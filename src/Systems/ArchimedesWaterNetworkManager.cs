@@ -18,6 +18,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private const int MaxBfsVisited = 4096;
     private const int UnownedCleanupRetryCooldownMs = 3000;
     private const int ManagedAdoptionCooldownAfterReleaseMs = 2500;
+    private const int DrainQuarantineMs = 1500;
 
     private readonly ICoreServerAPI api;
     private readonly ArchimedesScrewConfig config;
@@ -25,6 +26,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private readonly Dictionary<string, string> sourceOwnerByPos = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> managedAdoptionCooldownUntilMsByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> unownedCleanupCooldownUntilMsByKey = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> drainQuarantineUntilMsByKey = new(StringComparer.Ordinal);
     private readonly HashSet<string> screwBlockKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> controllerPosById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int[]> controllerOwnedById = new(StringComparer.Ordinal);
@@ -512,6 +514,46 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                wr.TryGetTarget(out _);
     }
 
+    public void MarkDrainQuarantine(BlockPos pos, int durationMs = DrainQuarantineMs)
+    {
+        string key = PosKey(pos);
+        long until = Environment.TickCount64 + Math.Max(0, durationMs);
+        if (drainQuarantineUntilMsByKey.TryGetValue(key, out long existingUntil) && existingUntil >= until)
+        {
+            return;
+        }
+
+        drainQuarantineUntilMsByKey[key] = until;
+    }
+
+    public bool IsDrainQuarantined(BlockPos pos)
+    {
+        return IsDrainQuarantined(PosKey(pos));
+    }
+
+    public bool IsDrainQuarantined(string key)
+    {
+        long now = Environment.TickCount64;
+        PruneExpiredDrainQuarantine(now);
+        return drainQuarantineUntilMsByKey.TryGetValue(key, out long until) && now < until;
+    }
+
+    private void PruneExpiredDrainQuarantine(long nowMs)
+    {
+        if (drainQuarantineUntilMsByKey.Count == 0)
+        {
+            return;
+        }
+
+        foreach (string key in drainQuarantineUntilMsByKey.Keys.ToList())
+        {
+            if (drainQuarantineUntilMsByKey[key] <= nowMs)
+            {
+                drainQuarantineUntilMsByKey.Remove(key);
+            }
+        }
+    }
+
     public bool TryResolveVanillaWaterFamily(Block block, out string familyId)
     {
         if (ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out ArchimedesWaterFamily family))
@@ -732,6 +774,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public bool EnsureSourceOwned(string ownerId, BlockPos pos, string familyId)
     {
+        string key = PosKey(pos);
+        if (IsDrainQuarantined(key))
+        {
+            return false;
+        }
+
         Block solidBlock = api.World.BlockAccessor.GetBlock(pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer;
@@ -749,7 +797,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         bool changed = false;
-        string key = PosKey(pos);
         managedAdoptionCooldownUntilMsByKey.Remove(key);
         if (!sourceOwnerByPos.TryGetValue(key, out string? existingOwner) ||
             !string.Equals(existingOwner, ownerId, StringComparison.Ordinal))
@@ -1510,6 +1557,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private bool AssignNearestActiveControllerForNewSource(BlockPos sourcePos, string familyId, string reason = "new source assignment")
     {
+        if (IsDrainQuarantined(sourcePos))
+        {
+            return false;
+        }
+
         ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterCachedDetailed(sourcePos);
         if (connectedResult.IsTruncated)
         {
