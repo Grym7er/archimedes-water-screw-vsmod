@@ -30,6 +30,12 @@ internal sealed class DefaultManagedWaterLocalParticipation : IManagedWaterLocal
             return false;
         }
 
+        Block belowSolid = world.BlockAccessor.GetBlock(pos.DownCopy());
+        if (belowSolid.Id == 0)
+        {
+            return false;
+        }
+
         return true;
     }
 }
