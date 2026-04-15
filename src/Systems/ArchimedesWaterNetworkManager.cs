@@ -506,6 +506,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return sourceOwnerByPos.TryGetValue(PosKey(pos), out ownerId!);
     }
 
+    public bool IsControllerLoaded(string controllerId)
+    {
+        return loadedControllers.TryGetValue(controllerId, out WeakReference<BlockEntityWaterArchimedesScrew>? wr) &&
+               wr.TryGetTarget(out _);
+    }
+
     public bool TryResolveVanillaWaterFamily(Block block, out string familyId)
     {
         if (ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out ArchimedesWaterFamily family))

@@ -13,12 +13,17 @@ public static class ArchimedesRelayAdjacency
         IBlockAccessor accessor = world.BlockAccessor;
         BlockPos belowPos = relayPos.DownCopy();
         Block belowFluid = accessor.GetBlock(belowPos, BlockLayersAccess.Fluid);
-        if (belowFluid.IsLiquid())
+        if (IsWaterBlock(belowFluid))
         {
             return false;
         }
 
         Block belowSolid = accessor.GetBlock(belowPos);
+        if (IsWaterBlock(belowSolid))
+        {
+            return false;
+        }
+
         AssetLocation? belowCode = belowSolid.Code;
         bool belowIsTallgrass = belowCode != null &&
                                 string.Equals(belowCode.Domain, "game", StringComparison.Ordinal) &&
@@ -47,5 +52,12 @@ public static class ArchimedesRelayAdjacency
         }
 
         return false;
+    }
+
+    private static bool IsWaterBlock(Block block)
+    {
+        return block.IsLiquid() &&
+               (ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _) ||
+                ArchimedesWaterFamilies.TryResolveManagedFamily(block, out _));
     }
 }

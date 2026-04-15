@@ -30,12 +30,23 @@ internal sealed class DefaultManagedWaterLocalParticipation : IManagedWaterLocal
             return false;
         }
 
-        Block belowSolid = world.BlockAccessor.GetBlock(pos.DownCopy());
+        BlockPos belowPos = pos.DownCopy();
+        Block belowSolid = world.BlockAccessor.GetBlock(belowPos);
         if (belowSolid.Id == 0)
         {
             return false;
         }
 
+        if (IsWaterBlock(belowSolid, manager))
+        {
+            return false;
+        }
+
         return true;
+    }
+
+    private static bool IsWaterBlock(Block block, ArchimedesWaterNetworkManager manager)
+    {
+        return block.IsLiquid() && manager.TryResolveIntakeWaterFamily(block, out _);
     }
 }

@@ -901,8 +901,16 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             if (waterManager.TryGetSourceOwner(pos, out string ownerId) &&
                 !string.Equals(ownerId, ControllerId, StringComparison.Ordinal))
             {
-                rejectedOtherOwner++;
-                continue;
+                bool ownerLoaded = waterManager.IsControllerLoaded(ownerId);
+                if (!ownerLoaded)
+                {
+                    // Allow takeover when prior owner isn't loaded, preventing stale ownership deadlocks.
+                }
+                else
+                {
+                    rejectedOtherOwner++;
+                    continue;
+                }
             }
 
             if (relayOwnedPositions.ContainsKey(key))
