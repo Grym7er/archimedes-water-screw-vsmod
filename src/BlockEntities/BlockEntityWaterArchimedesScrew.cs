@@ -730,7 +730,27 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return false;
         }
 
-        bool changed = waterManager.AssignOwnedSourceForController(ControllerId, seedPos, familyId);
+        BlockPos? sourcePos = null;
+        BlockFacing? sourceFacing = null;
+        BlockPos topPos = FindTopScrewPos();
+        if (Api.World.BlockAccessor.GetBlock(topPos) is BlockWaterArchimedesScrew topScrew &&
+            topScrew.IsOutletBlock())
+        {
+            BlockFacing? facing = topScrew.GetPortFacing();
+            if (facing != null)
+            {
+                sourcePos = topPos;
+                sourceFacing = facing;
+            }
+        }
+
+        bool changed = waterManager.AssignOwnedSourceForController(
+            ControllerId,
+            seedPos,
+            familyId,
+            sourcePos,
+            sourceFacing
+        );
         ownedPositions[ArchimedesWaterNetworkManager.PosKey(seedPos)] = seedPos.Copy();
         return changed;
     }

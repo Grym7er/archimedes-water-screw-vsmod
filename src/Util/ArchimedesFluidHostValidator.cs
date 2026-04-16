@@ -5,6 +5,7 @@ namespace ArchimedesScrew;
 
 internal static class ArchimedesFluidHostValidator
 {
+
     public static bool IsFluidHostCellCompatible(
         IWorldAccessor world,
         BlockPos targetPos,
@@ -19,18 +20,24 @@ internal static class ArchimedesFluidHostValidator
         bool fluidClear = targetFluid.Id == 0 ||
                           ArchimedesWaterFamilies.IsManagedWater(targetFluid) ||
                           IsVanillaWaterBlock(targetFluid);
-        if (!solidClear || !fluidClear)
+        bool hasDirectionalContext = sourcePos != null && sourceFacing != null;
+        bool allowSolidByDirectionalBarrier = !solidClear && hasDirectionalContext;
+        if (!fluidClear || (!solidClear && !allowSolidByDirectionalBarrier))
         {
             return false;
         }
 
-        if (sourcePos == null || sourceFacing == null)
+        if (!hasDirectionalContext)
         {
             return true;
         }
 
         Block sourceSolid = ba.GetBlock(sourcePos);
-        float sourceBarrier = sourceSolid.GetLiquidBarrierHeightOnSide(sourceFacing, sourcePos);
+        bool skipSourceBarrierCheck =
+            sourceSolid is BlockWaterArchimedesScrew screw && screw.IsOutletBlock();
+        float sourceBarrier = skipSourceBarrierCheck
+            ? 0f
+            : sourceSolid.GetLiquidBarrierHeightOnSide(sourceFacing, sourcePos);
         float targetBarrier = targetSolid.GetLiquidBarrierHeightOnSide(sourceFacing.Opposite, targetPos);
         return sourceBarrier < 1f && targetBarrier < 1f;
     }
@@ -39,4 +46,5 @@ internal static class ArchimedesFluidHostValidator
     {
         return block.IsLiquid() && ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _);
     }
+
 }

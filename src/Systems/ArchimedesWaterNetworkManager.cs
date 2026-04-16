@@ -772,7 +772,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return new HashSet<string>(sourcePositionsByKey.Keys, StringComparer.Ordinal);
     }
 
-    public bool EnsureSourceOwned(string ownerId, BlockPos pos, string familyId)
+    public bool EnsureSourceOwned(
+        string ownerId,
+        BlockPos pos,
+        string familyId,
+        BlockPos? sourcePos = null,
+        BlockFacing? sourceFacing = null)
     {
         string key = PosKey(pos);
         if (IsDrainQuarantined(key))
@@ -783,7 +788,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         Block solidBlock = api.World.BlockAccessor.GetBlock(pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer;
-        if (!solidClear)
+        bool directionalHostCompatible = ArchimedesFluidHostValidator.IsFluidHostCellCompatible(
+            api.World,
+            pos,
+            sourcePos,
+            sourceFacing
+        );
+        if (!solidClear && !directionalHostCompatible)
         {
             return false;
         }
@@ -824,9 +835,14 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     /// Intent-revealing wrapper for controller-driven source assignment.
     /// Preserves existing ownership semantics from <see cref="EnsureSourceOwned"/>.
     /// </summary>
-    public bool AssignOwnedSourceForController(string controllerId, BlockPos pos, string familyId)
+    public bool AssignOwnedSourceForController(
+        string controllerId,
+        BlockPos pos,
+        string familyId,
+        BlockPos? sourcePos = null,
+        BlockFacing? sourceFacing = null)
     {
-        return EnsureSourceOwned(controllerId, pos, familyId);
+        return EnsureSourceOwned(controllerId, pos, familyId, sourcePos, sourceFacing);
     }
 
     public IReadOnlyList<BlockPos> GetOwnedSourcePositionsForController(string controllerId)
