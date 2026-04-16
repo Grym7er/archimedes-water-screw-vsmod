@@ -1406,16 +1406,27 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             return false;
         }
+        BlockPos topPos = FindTopScrewPos();
+        if (Api.World.BlockAccessor.GetBlock(topPos) is BlockWaterArchimedesScrew topScrew &&
+            topScrew.IsOutletBlock())
+        {
+            BlockFacing? facing = topScrew.GetPortFacing();
+            if (facing != null)
+            {
+                BlockPos expectedOutputPos = topPos.AddCopy(facing);
+                if (seedPos.Equals(expectedOutputPos))
+                {
+                    return ArchimedesFluidHostValidator.IsFluidHostCellCompatible(
+                        Api.World,
+                        seedPos,
+                        topPos,
+                        facing
+                    );
+                }
+            }
+        }
 
-        Block solidBlock = Api.World.BlockAccessor.GetBlock(seedPos);
-        Block fluidBlock = Api.World.BlockAccessor.GetBlock(seedPos, BlockLayersAccess.Fluid);
-
-        bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer || waterManager?.IsArchimedesWaterBlock(solidBlock) == true;
-        bool fluidClear = fluidBlock.Id == 0 ||
-                          waterManager?.IsArchimedesWaterBlock(fluidBlock) == true ||
-                          (fluidBlock.IsLiquid() && ArchimedesWaterFamilies.TryResolveVanillaFamily(fluidBlock, out _));
-
-        return solidClear && fluidClear;
+        return ArchimedesFluidHostValidator.IsFluidHostCellCompatible(Api.World, seedPos);
     }
 
     private BlockPos GetSeedPosition()

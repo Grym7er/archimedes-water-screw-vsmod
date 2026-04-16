@@ -139,6 +139,8 @@ public static class ArchimedesScrewAssemblyAnalyzer
         }
 
         BlockPos outputPos = topPos.UpCopy();
+        BlockPos? outputSourcePos = null;
+        BlockFacing? outputFacing = null;
         if (outletEntries.Count == 1)
         {
             BlockFacing? facing = outletEntries[0].Block.GetPortFacing();
@@ -155,14 +157,16 @@ public static class ArchimedesScrewAssemblyAnalyzer
                 };
             }
 
+            outputSourcePos = outletEntries[0].Pos.Copy();
+            outputFacing = facing;
             outputPos = outletEntries[0].Pos.AddCopy(facing);
         }
 
-        Block solidBlock = world.BlockAccessor.GetBlock(outputPos);
-        Block fluidBlock = world.BlockAccessor.GetBlock(outputPos, BlockLayersAccess.Fluid);
-        bool outputClear = IsOutputPositionClear(solidBlock, fluidBlock);
+        bool outputClear = IsOutputPositionClear(world, outputPos, outputSourcePos, outputFacing);
         if (!outputClear)
         {
+            Block solidBlock = world.BlockAccessor.GetBlock(outputPos);
+            Block fluidBlock = world.BlockAccessor.GetBlock(outputPos, BlockLayersAccess.Fluid);
             return new AssemblyStatus
             {
                 IsAssemblyValid = false,
@@ -222,18 +226,17 @@ public static class ArchimedesScrewAssemblyAnalyzer
         };
     }
 
-    private static bool IsOutputPositionClear(Block solidBlock, Block fluidBlock)
+    private static bool IsOutputPositionClear(
+        IWorldAccessor world,
+        BlockPos outputPos,
+        BlockPos? outputSourcePos,
+        BlockFacing? outputFacing)
     {
-        bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer;
-        bool fluidClear = fluidBlock.Id == 0 ||
-                          ArchimedesWaterFamilies.IsManagedWater(fluidBlock) ||
-                          IsVanillaWaterBlock(fluidBlock);
-
-        return solidClear && fluidClear;
-    }
-
-    private static bool IsVanillaWaterBlock(Block block)
-    {
-        return block.IsLiquid() && ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _);
+        return ArchimedesFluidHostValidator.IsFluidHostCellCompatible(
+            world,
+            outputPos,
+            outputSourcePos,
+            outputFacing
+        );
     }
 }
