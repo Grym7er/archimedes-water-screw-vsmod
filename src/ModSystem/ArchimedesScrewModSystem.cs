@@ -98,7 +98,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     {
         ArchimedesScrewConfig.WaterConfig w = config.Water;
         api.Logger.Notification(
-            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, enableRelaySources={10}, maxRelayPromotionsPerTick={11}, maxRelaySourcesPerController={12}, requiredMechPowerForMaxRelay={13}, relayPowerHysteresisPct={14}, debugControllerStatsOnInteract={15}, enableWaterfallCompat={16}, waterfallCompatDebug={17}, verboseDebug={18}",
+            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, enableRelaySources={10}, maxRelayPromotionsPerTick={11}, maxRelaySourcesPerController={12}, requiredMechPowerForMaxRelay={13}, relayPowerHysteresisPct={14}, relayCandidateOrderingMode={15}, debugControllerStatsOnInteract={16}, enableWaterfallCompat={17}, waterfallCompatDebug={18}, verboseDebug={19}",
             LogPrefix,
             w.FastTickMs,
             w.IdleTickMs,
@@ -114,6 +114,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             w.MaxRelaySourcesPerController,
             w.RequiredMechPowerForMaxRelay,
             w.RelayPowerHysteresisPct,
+            w.RelayCandidateOrderingMode,
             w.DebugControllerStatsOnInteract,
             w.EnableWaterfallCompat,
             w.WaterfallCompatDebug,
@@ -578,6 +579,9 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 return true;
             case "RELAY_POWER_HYSTERESIS_PCT":
                 target.RelayPowerHysteresisPct = tree.GetFloat("value");
+                return true;
+            case "RELAY_CANDIDATE_ORDERING_MODE":
+                target.RelayCandidateOrderingMode = tree.GetString("value", "deterministic");
                 return true;
             case "MINIMUM_NETWORK_SPEED":
                 target.MinimumNetworkSpeed = tree.GetFloat("value");

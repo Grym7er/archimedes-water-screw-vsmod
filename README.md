@@ -5,8 +5,10 @@ Mechanically powered water lifting for Vintage Story.
 ## Features
 
 - Vertical Archimedes screw multiblock with intake, straight segments, and outlet.
+- Intake can be placed before water arrives; activation still requires valid intake fluid.
 - Pumps and maintains managed water at the outlet while powered.
 - Supports relay sources for long-distance aqueduct flow.
+- Relay promotion ordering is configurable (deterministic or random within equal-distance buckets).
 - Handles ownership and cleanup of managed sources when assemblies become invalid.
 - Save/load-safe controller ownership restore and relay stabilization.
 - Truncation-safe behavior for very large connected water networks.

@@ -32,13 +32,13 @@ internal static class ArchimedesFluidHostValidator
             return true;
         }
 
-        Block sourceSolid = ba.GetBlock(sourcePos);
+        Block sourceSolid = ba.GetBlock(sourcePos!);
         bool skipSourceBarrierCheck =
             sourceSolid is BlockWaterArchimedesScrew screw && screw.IsOutletBlock();
         float sourceBarrier = skipSourceBarrierCheck
             ? 0f
-            : sourceSolid.GetLiquidBarrierHeightOnSide(sourceFacing, sourcePos);
-        float targetBarrier = targetSolid.GetLiquidBarrierHeightOnSide(sourceFacing.Opposite, targetPos);
+            : sourceSolid.GetLiquidBarrierHeightOnSide(sourceFacing!, sourcePos!);
+        float targetBarrier = targetSolid.GetLiquidBarrierHeightOnSide(sourceFacing!.Opposite, targetPos);
         return sourceBarrier < 1f && targetBarrier < 1f;
     }
 

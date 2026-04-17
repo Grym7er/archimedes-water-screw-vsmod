@@ -41,21 +41,6 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
             return false;
         }
 
-        if (blockToPlace.IsIntakeBlock() && !blockToPlace.HasValidWaterIntake(world, blockSel.Position))
-        {
-            failureCode = "archimedes-screw-requires-water";
-            Block currentFluid = world.BlockAccessor.GetBlock(blockSel.Position, BlockLayersAccess.Fluid);
-            ArchimedesScrewModSystem.LogVerboseOrNotification(api.Logger,
-                "{0} Intake placement rejected at {1}: fluid={2}, flow={3}, height={4}",
-                ArchimedesScrewModSystem.LogPrefix,
-                blockSel.Position,
-                currentFluid.Code,
-                currentFluid.Variant?["flow"] ?? "<null>",
-                currentFluid.Variant?["height"] ?? "<null>"
-            );
-            return false;
-        }
-
         foreach (BlockFacing face in BlockFacing.VERTICALS)
         {
             BlockPos pos = blockSel.Position.AddCopy(face);
@@ -134,26 +119,15 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
             return outlet ?? this;
         }
 
-        if (HasValidWaterIntake(world, placePos))
-        {
-            string intakeVariant = "ported-" + facing.Code;
-            BlockWaterArchimedesScrew? intake = ResolveMainScrewVariantBlock(intakeVariant);
-            ArchimedesScrewModSystem.LogVerboseOrNotification(api.Logger,
-                "{0} End-cap as intake: variant {1} at {2}",
-                ArchimedesScrewModSystem.LogPrefix,
-                intakeVariant,
-                placePos
-            );
-            return intake ?? this;
-        }
-
-        failureCode = "archimedes-screw-endcap-context";
+        string intakeVariantFallback = "ported-" + facing.Code;
+        BlockWaterArchimedesScrew? intakeFallback = ResolveMainScrewVariantBlock(intakeVariantFallback);
         ArchimedesScrewModSystem.LogVerboseOrNotification(api.Logger,
-            "{0} End-cap placement rejected at {1}: need vanilla water here, or place on a straight screw or intake below",
+            "{0} End-cap as intake: variant {1} at {2}",
             ArchimedesScrewModSystem.LogPrefix,
+            intakeVariantFallback,
             placePos
         );
-        return null;
+        return intakeFallback ?? this;
     }
 
     /// <summary>True when the block below supports placing an outlet (straight segment or intake, not another outlet).</summary>

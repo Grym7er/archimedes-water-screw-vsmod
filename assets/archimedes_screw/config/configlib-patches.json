@@ -30,6 +30,11 @@
         "water/requiredMechPowerForMaxRelay": "REQUIRED_MECH_POWER_FOR_MAX_RELAY",
         "water/relayPowerHysteresisPct": "RELAY_POWER_HYSTERESIS_PCT"
       }
+    },
+    "string": {
+      "archimedes_screw:config/settings.json": {
+        "water/relayCandidateOrderingMode": "RELAY_CANDIDATE_ORDERING_MODE"
+      }
     }
   },
   "settings": {
@@ -228,6 +233,19 @@
           "max": 0.5,
           "step": 0.01
         }
+      }
+    },
+    "string": {
+      "RELAY_CANDIDATE_ORDERING_MODE": {
+        "name": "relay-candidate-ordering-mode",
+        "ingui": "archimedes_screw:config-relay-candidate-ordering-mode",
+        "weight": 5.25,
+        "comment": "Relay candidate ordering mode: deterministic or randomWithinDistanceBucket.",
+        "default": "deterministic",
+        "values": [
+          "deterministic",
+          "randomWithinDistanceBucket"
+        ]
       }
     }
   },

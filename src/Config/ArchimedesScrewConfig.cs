@@ -65,6 +65,11 @@ public sealed class ArchimedesScrewConfig
         public float RelayPowerHysteresisPct { get; set; } = 0.05f;
 
         /// <summary>
+        /// Relay promotion candidate ordering mode. Supported values: deterministic, randomWithinDistanceBucket.
+        /// </summary>
+        public string RelayCandidateOrderingMode { get; set; } = "deterministic";
+
+        /// <summary>
         /// Enables verbose per-controller diagnostics on right-click status checks.
         /// </summary>
         public bool DebugControllerStatsOnInteract { get; set; } = false;
@@ -103,6 +108,7 @@ public sealed class ArchimedesScrewConfig
             MaxRelaySourcesPerController = source.MaxRelaySourcesPerController;
             RequiredMechPowerForMaxRelay = source.RequiredMechPowerForMaxRelay;
             RelayPowerHysteresisPct = source.RelayPowerHysteresisPct;
+            RelayCandidateOrderingMode = source.RelayCandidateOrderingMode;
             DebugControllerStatsOnInteract = source.DebugControllerStatsOnInteract;
             EnableWaterfallCompat = source.EnableWaterfallCompat;
             WaterfallCompatDebug = source.WaterfallCompatDebug;

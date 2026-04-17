@@ -14,6 +14,7 @@
     "maxRelaySourcesPerController": 12,
     "requiredMechPowerForMaxRelay": 0.5,
     "relayPowerHysteresisPct": 0.05,
+    "relayCandidateOrderingMode": "deterministic",
     "debugControllerStatsOnInteract": false,
     "enableWaterfallCompat": true,
     "waterfallCompatDebug": false,

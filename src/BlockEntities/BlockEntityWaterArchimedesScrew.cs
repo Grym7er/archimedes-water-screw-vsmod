@@ -169,11 +169,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int managedCount = ownedPositions.Count;
         int seedOwnedCount = Math.Max(0, managedCount - relayCount);
         int relayCap = Math.Max(0, waterConfig.MaxRelaySourcesPerController);
+        string relayOrderingMode = GetNormalizedRelayCandidateOrderingMode();
         float power = GetCurrentMechanicalPower();
         bool relayDue = IsRelayCreationDue();
 
         Log(
-            "Debug controller stats: pos={0}, managedSources={1}, relaySources={2}, nonRelaySources={3}, relayCapConfigured={4}, relayCapEffective={5}, relayCreateDue={6}, nextRelayCreationDueInMs={7}, cadence={8}, nextControllerTickDueInMs={9}, lowCadenceSkipsRemaining={10}, mechPower={11:0.#####}, cooldownTracked={12}, cooldownSuppressedTotal={13}, ownershipChurnTotal={14}",
+            "Debug controller stats: pos={0}, managedSources={1}, relaySources={2}, nonRelaySources={3}, relayCapConfigured={4}, relayCapEffective={5}, relayCreateDue={6}, nextRelayCreationDueInMs={7}, relayOrderingMode={8}, cadence={9}, nextControllerTickDueInMs={10}, lowCadenceSkipsRemaining={11}, mechPower={12:0.#####}, cooldownTracked={13}, cooldownSuppressedTotal={14}, ownershipChurnTotal={15}",
             Pos,
             managedCount,
             relayCount,
@@ -182,6 +183,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             lastEffectiveRelayCap,
             relayDue,
             Math.Max(0, nextRelayCreationDueMs - Environment.TickCount64),
+            relayOrderingMode,
             lastScheduledCadence,
             Math.Max(0, nextCentralWaterTickDueMs - Environment.TickCount64),
             lowCadenceScanSkipsRemaining,
@@ -200,7 +202,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int relayDueMs = Math.Max(0, (int)(nextRelayCreationDueMs - Environment.TickCount64));
         int tickDueMs = Math.Max(0, (int)(nextCentralWaterTickDueMs - Environment.TickCount64));
         string seedText = lastSeedPos == null ? "-" : lastSeedPos.ToString();
-        return $"Controller {ControllerId}: seed={seedText}, owned={managedCount}, relays={relayCount}, cadence={lastScheduledCadence}, tickDueMs={tickDueMs}, relayDueMs={relayDueMs}, graceMs={graceMs}, cooldownTracked={sourceCooldownUntilMsByKey.Count}";
+        return $"Controller {ControllerId}: seed={seedText}, owned={managedCount}, relays={relayCount}, relayOrderingMode={GetNormalizedRelayCandidateOrderingMode()}, cadence={lastScheduledCadence}, tickDueMs={tickDueMs}, relayDueMs={relayDueMs}, graceMs={graceMs}, cooldownTracked={sourceCooldownUntilMsByKey.Count}";
     }
 
     public void InvalidateAssemblyAnalysisCache()
@@ -895,7 +897,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int created = 0;
         int budget = Math.Max(1, perTickBudget);
         int maxCreateAllowed = Math.Min(budget, relayCap - relayOwnedPositions.Count);
-        foreach ((string key, int distance) in OrderRelayPromotionCandidates(distanceByKey))
+        int randomSeed = BuildRelayOrderingSeed();
+        foreach ((string key, int distance) in OrderRelayPromotionCandidates(distanceByKey, randomSeed))
         {
             if (created >= maxCreateAllowed)
             {
@@ -1080,12 +1083,75 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return distanceByKey;
     }
 
-    private IEnumerable<KeyValuePair<string, int>> OrderRelayPromotionCandidates(Dictionary<string, int> distanceByKey)
+    private IEnumerable<KeyValuePair<string, int>> OrderRelayPromotionCandidates(
+        Dictionary<string, int> distanceByKey,
+        int randomSeed)
     {
-        return distanceByKey
-            .OrderBy(p => p.Value)
-            .ThenByDescending(p => TryParseYFromPosKey(p.Key))
-            .ThenBy(p => p.Key, StringComparer.Ordinal);
+        if (IsRandomWithinDistanceBucketMode())
+        {
+            foreach (KeyValuePair<string, int> candidate in OrderRelayPromotionCandidatesRandomWithinDistanceBucket(distanceByKey, randomSeed))
+            {
+                yield return candidate;
+            }
+
+            yield break;
+        }
+
+        foreach (KeyValuePair<string, int> candidate in distanceByKey
+                     .OrderBy(p => p.Value)
+                     .ThenByDescending(p => TryParseYFromPosKey(p.Key))
+                     .ThenBy(p => p.Key, StringComparer.Ordinal))
+        {
+            yield return candidate;
+        }
+    }
+
+    private IEnumerable<KeyValuePair<string, int>> OrderRelayPromotionCandidatesRandomWithinDistanceBucket(
+        Dictionary<string, int> distanceByKey,
+        int randomSeed)
+    {
+        Random random = new(randomSeed);
+        foreach (IGrouping<int, KeyValuePair<string, int>> bucket in distanceByKey.GroupBy(p => p.Value).OrderBy(g => g.Key))
+        {
+            List<KeyValuePair<string, int>> shuffled = bucket.ToList();
+            for (int i = shuffled.Count - 1; i > 0; i--)
+            {
+                int j = random.Next(i + 1);
+                (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
+            }
+
+            foreach (KeyValuePair<string, int> candidate in shuffled)
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private bool IsRandomWithinDistanceBucketMode()
+    {
+        return string.Equals(
+            GetNormalizedRelayCandidateOrderingMode(),
+            "randomwithindistancebucket",
+            StringComparison.Ordinal
+        );
+    }
+
+    private string GetNormalizedRelayCandidateOrderingMode()
+    {
+        string mode = waterConfig?.RelayCandidateOrderingMode ?? "deterministic";
+        mode = mode.Trim();
+        if (string.IsNullOrEmpty(mode))
+        {
+            return "deterministic";
+        }
+
+        return mode.Replace("_", string.Empty).Replace("-", string.Empty).ToLowerInvariant();
+    }
+
+    private int BuildRelayOrderingSeed()
+    {
+        int tickBucket = (int)(Environment.TickCount64 / Math.Max(1, waterConfig?.FastTickMs ?? 250));
+        return HashCode.Combine(ControllerId, tickBucket, relayOwnedPositions.Count, ownedPositions.Count);
     }
 
     private static List<BlockPos> OrderUnsupportedReleaseCandidates(List<BlockPos> releaseCandidates, List<BlockPos> origins)
