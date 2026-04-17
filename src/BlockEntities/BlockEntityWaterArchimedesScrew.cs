@@ -391,8 +391,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ownedPositions.Clear();
         if (ownedBytes != null)
         {
-            int[] flatPositions = SerializerUtil.Deserialize<int[]>(ownedBytes);
-            foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatPositions))
+            foreach (BlockPos pos in SafeDecodePositionArray(ownedBytes, OwnedPositionsKey))
             {
                 ownedPositions[ArchimedesWaterNetworkManager.PosKey(pos)] = pos;
             }
@@ -402,15 +401,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         relayOwnedPositions.Clear();
         if (relayBytes != null)
         {
-            int[] flatRelayPositions = SerializerUtil.Deserialize<int[]>(relayBytes);
-            foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatRelayPositions))
+            foreach (BlockPos pos in SafeDecodePositionArray(relayBytes, RelayPositionsKey))
             {
                 relayOwnedPositions[ArchimedesWaterNetworkManager.PosKey(pos)] = pos;
             }
         }
 
         byte[]? seedBytes = tree.GetBytes(LastSeedKey);
-        lastSeedPos = seedBytes == null ? null : ArchimedesPositionCodec.DecodeSinglePos(SerializerUtil.Deserialize<int[]>(seedBytes));
+        lastSeedPos = seedBytes == null ? null : SafeDecodeSinglePos(seedBytes, LastSeedKey);
 
         deserializedLastEffectiveRelayCap = tree.GetInt(LastEffectiveRelayCapKey, -1);
     }
@@ -1611,6 +1609,58 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private static int MinDistanceSquared(BlockPos pos, IEnumerable<BlockPos> origins)
     {
         return origins.Min(origin => ArchimedesPositionCodec.DistanceSquared(pos, origin));
+    }
+
+    private IEnumerable<BlockPos> SafeDecodePositionArray(byte[] encodedBytes, string fieldName)
+    {
+        int[]? flat = null;
+        try
+        {
+            flat = SerializerUtil.Deserialize<int[]>(encodedBytes);
+        }
+        catch (Exception ex)
+        {
+            Log("Corrupt {0} payload ignored (byteLength={1}, error={2})", fieldName, encodedBytes.Length, ex.Message);
+            yield break;
+        }
+
+        if (flat == null || flat.Length == 0)
+        {
+            yield break;
+        }
+
+        if (flat.Length % 3 != 0)
+        {
+            Log("Invalid {0} payload shape ignored (intLength={1}, expected multiple of 3)", fieldName, flat.Length);
+            yield break;
+        }
+
+        foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flat))
+        {
+            yield return pos;
+        }
+    }
+
+    private BlockPos? SafeDecodeSinglePos(byte[] encodedBytes, string fieldName)
+    {
+        int[]? flat = null;
+        try
+        {
+            flat = SerializerUtil.Deserialize<int[]>(encodedBytes);
+        }
+        catch (Exception ex)
+        {
+            Log("Corrupt {0} payload ignored (byteLength={1}, error={2})", fieldName, encodedBytes.Length, ex.Message);
+            return null;
+        }
+
+        if (flat == null || flat.Length != 3)
+        {
+            Log("Invalid {0} payload shape ignored (intLength={1}, expected 3)", fieldName, flat?.Length ?? 0);
+            return null;
+        }
+
+        return ArchimedesPositionCodec.DecodeSinglePos(flat);
     }
 
     private readonly record struct ControllerEvaluation(

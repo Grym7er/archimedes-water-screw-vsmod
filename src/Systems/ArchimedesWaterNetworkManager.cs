@@ -15,6 +15,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private const string SaveKeyControllerPositions = "archimedes_screw/controllerpositions";
     private const string SaveKeyControllerOwned = "archimedes_screw/controllerowned";
     private const string SaveKeySourceProvenance = "archimedes_screw/sourceprovenance";
+    private const string SaveKeyLockedVanilla = "archimedes_screw/lockedvanilla";
 
     private const int MaxBfsVisited = 4096;
     private const int UnownedCleanupRetryCooldownMs = 3000;
@@ -299,6 +300,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         controllerOwnedById.Clear();
         sourceOwnerByPos.Clear();
         sourceProvenanceByPos.Clear();
+        lockedVanillaFamilyByPos.Clear();
         unownedCleanupCooldownUntilMsByKey.Clear();
 
         int droppedScrewKeys = 0;
@@ -360,11 +362,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
 
             api.Logger.Notification(
-                "{0} Loaded water manager state: screws={1}, controllers={2}, trackedSources={3}",
+                "{0} Loaded water manager state: screws={1}, controllers={2}, trackedSources={3}, lockedVanilla={4}",
                 ArchimedesScrewModSystem.LogPrefix,
                 screwBlockKeys.Count,
                 controllerPosById.Count,
-                sourceOwnerByPos.Count
+                sourceOwnerByPos.Count,
+                lockedVanillaFamilyByPos.Count
             );
             return;
         }
@@ -432,6 +435,23 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
         }
 
+        Dictionary<string, string>? lockedVanillaRaw = LoadSerialized<Dictionary<string, string>>(SaveKeyLockedVanilla);
+        if (lockedVanillaRaw != null)
+        {
+            foreach ((string key, string familyId) in lockedVanillaRaw)
+            {
+                if (!TryParsePosKey(key, out _))
+                {
+                    continue;
+                }
+
+                if (ArchimedesWaterFamilies.All.Any(f => string.Equals(f.Id, familyId, StringComparison.Ordinal)))
+                {
+                    lockedVanillaFamilyByPos[key] = familyId;
+                }
+            }
+        }
+
         api.Logger.Notification(
             "{0} Load: merged mod ownership blob rows={1}, uniqueTrackedSources={2}, duplicatePositionClaimsWhileMerging={3}",
             ArchimedesScrewModSystem.LogPrefix,
@@ -467,11 +487,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         api.Logger.Notification(
-            "{0} Loaded water manager state: screws={1}, controllers={2}, trackedSources={3}",
+            "{0} Loaded water manager state: screws={1}, controllers={2}, trackedSources={3}, lockedVanilla={4}",
             ArchimedesScrewModSystem.LogPrefix,
             screwBlockKeys.Count,
             controllerPosById.Count,
-            sourceOwnerByPos.Count
+            sourceOwnerByPos.Count,
+            lockedVanillaFamilyByPos.Count
         );
     }
 
@@ -484,14 +505,16 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             SaveKeySourceProvenance,
             SerializerUtil.Serialize(sourceProvenanceByPos.ToDictionary(kvp => kvp.Key, kvp => (int)kvp.Value, StringComparer.Ordinal))
         );
+        api.WorldManager.SaveGame.StoreData(SaveKeyLockedVanilla, SerializerUtil.Serialize(lockedVanillaFamilyByPos));
         api.Logger.Notification(
-            "{0} Saved water manager state: screws={1}, controllerPosEntries={2}, controllerOwnedSnapshots={3}, trackedSources={4}, trackedProvenance={5}, loadedControllerWeakRefs={6}",
+            "{0} Saved water manager state: screws={1}, controllerPosEntries={2}, controllerOwnedSnapshots={3}, trackedSources={4}, trackedProvenance={5}, lockedVanilla={6}, loadedControllerWeakRefs={7}",
             ArchimedesScrewModSystem.LogPrefix,
             screwBlockKeys.Count,
             controllerPosById.Count,
             controllerOwnedById.Count,
             sourceOwnerByPos.Count,
             sourceProvenanceByPos.Count,
+            lockedVanillaFamilyByPos.Count,
             loadedControllers.Count
         );
     }
@@ -818,13 +841,21 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return false;
         }
 
+        Block existingFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (IsVanillaSelfSustainingSourceForFamily(existingFluid, familyId) &&
+            IsVanillaLocked(pos, familyId))
+        {
+            ArchimedesPerf.AddCount("water.claims.rejected.lockedVanilla");
+            return false;
+        }
+
         if (!CanControllerClaimInDomain(ownerId, pos, familyId))
         {
             return false;
         }
 
         Block solidBlock = api.World.BlockAccessor.GetBlock(pos);
-        Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        Block fluidBlock = existingFluid;
         bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer;
         bool directionalHostCompatible = ArchimedesFluidHostValidator.IsFluidHostCellCompatible(
             api.World,
@@ -863,6 +894,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             !string.Equals(currentFamilyId, familyId, StringComparison.Ordinal))
         {
             SetManagedSource(pos, familyId);
+            CaptureVanillaLocksAround(pos, familyId);
             changed = true;
         }
 
@@ -1203,6 +1235,24 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
             Block fluid = ba.GetBlock(p, BlockLayersAccess.Fluid);
             string pkey = PosKey(p);
+            bool isUnownedManagedSelfSustaining =
+                IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
+                !sourceOwnerByPos.ContainsKey(pkey);
+            int lockedNeighbors = CountLockedVanillaNeighbors(p, familyId);
+
+            if (isUnownedManagedSelfSustaining &&
+                (IsVanillaLocked(p, familyId) || lockedNeighbors > 0))
+            {
+                if (TryGetVanillaEquivalent(fluid, out Block vanillaEquivalent))
+                {
+                    api.World.BlockAccessor.SetBlock(vanillaEquivalent.Id, p, BlockLayersAccess.Fluid);
+                    TriggerLiquidUpdates(p, vanillaEquivalent);
+                    CaptureVanillaLocksAround(p, familyId);
+                }
+
+                continue;
+            }
+
             bool claimed = false;
             if (IsVanillaSelfSustainingSourceForFamily(fluid, familyId) &&
                 TryConvertVanillaSourceForPlayer(p, familyId, "connected-family-fluid sweep (drain context)"))
@@ -1211,8 +1261,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
             else if (adoptManagedSelfSustaining &&
                      !string.IsNullOrWhiteSpace(ownerHintControllerId) &&
-                     IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
-                     !sourceOwnerByPos.ContainsKey(pkey))
+                     isUnownedManagedSelfSustaining)
             {
                 if (IsManagedAdoptionCoolingDown(pkey, out _))
                 {
@@ -1375,7 +1424,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             SuppressRemovalNotification(PosKey(pos));
         }
 
+        bool transitionedFromNonLiquid = currentFluid.Id == 0 || !currentFluid.IsLiquid();
         api.World.BlockAccessor.SetBlock(desiredBlock.Id, pos, BlockLayersAccess.Fluid);
+        if (transitionedFromNonLiquid)
+        {
+            CaptureVanillaLocksAround(pos, familyId);
+        }
         if (triggerUpdates)
         {
             TriggerLiquidUpdates(pos, desiredBlock);

@@ -2,7 +2,7 @@
 
 This matrix validates the unified (non-legacy) water ownership architecture:
 
-- frontier-limited vanilla claiming,
+- strict first-touch vanilla locking,
 - deterministic claim-domain arbitration,
 - provenance tracking,
 - conversion-intent queue processing.
@@ -20,37 +20,46 @@ This matrix validates the unified (non-legacy) water ownership architecture:
    - Expect converted cells to receive ownership and provenance.
 
 2. Single controller, flow into large lake
-   - Expect lake body to remain largely vanilla/unowned.
-   - Expect policy rejection counters (`detectedVanillaBody`) to rise.
+   - Expect lake body to remain completely vanilla/unowned at lock-captured boundary.
+   - Expect lock rejection counters (`lockedVanilla`) to rise.
 
-3. Two controllers in shared component (same family)
+3. Drain after lake contact
+   - Run stream until contact with pre-existing lake, then remove power/force drain.
+   - Expect pre-existing locked lake cells to remain unchanged before/after drain.
+
+4. Two controllers in shared component (same family)
    - Expect deterministic single-writer claim behavior.
    - Expect no ownership flip-flop between controllers over repeated ticks.
 
-4. Two controllers different families nearby
+5. Two controllers different families nearby
    - Expect no cross-family claim assignment.
    - Expect each family remains isolated under policy checks.
 
-5. Player bucket placement next to managed water
+6. Player bucket placement next to managed water
    - Expect conversion intent queued, then converted by central tick.
    - Expect ownership assignment without immediate reversion churn.
 
-6. Power loss and recovery
+7. Power loss and recovery
    - Expect unsupported managed sources to drain.
    - Expect resumed claims after power restore to follow frontier policy.
 
-7. Chunk boundary behavior
+8. Chunk boundary behavior
    - Move player to unload/reload neighboring chunks around managed network.
-   - Expect ownership/provenance persistence and deterministic reassignment.
+   - Expect ownership/provenance/vanilla-lock persistence and deterministic reassignment.
 
-8. Save/reload cycle
+9. Save/reload cycle
    - Save world with active managed network.
-   - Reload and verify ownership/provenance persistence consistency.
+   - Reload and verify ownership/provenance/vanilla-lock persistence consistency.
+
+10. Corrupt block entity payload resilience
+   - Inject malformed BE arrays (or reproduce from broken save) for owned/relay/seed payloads.
+   - Expect decode to skip corrupt payload with warning and no client crash.
 
 ## Pass criteria
 
 - Build succeeds with zero compile errors.
 - No persistent ownership oscillation under contention.
-- Natural vanilla bodies are not broadly seized.
+- Locked vanilla bodies are never converted.
 - Player-intent conversions continue to work.
 - No unowned managed-source accumulation over steady-state runtime.
+- Malformed BE payloads do not crash client chunk packet handling.

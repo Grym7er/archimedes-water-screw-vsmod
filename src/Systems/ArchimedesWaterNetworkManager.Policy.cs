@@ -9,8 +9,10 @@ namespace ArchimedesScrew;
 public sealed partial class ArchimedesWaterNetworkManager
 {
     private readonly Dictionary<string, ManagedSourceProvenance> sourceProvenanceByPos = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> lockedVanillaFamilyByPos = new(StringComparer.Ordinal);
     private readonly Queue<ConversionIntent> conversionIntentQueue = new();
     private readonly HashSet<string> queuedIntentKeys = new(StringComparer.Ordinal);
+    private static readonly List<BlockPos> LockCaptureOffsets = BuildLockCaptureOffsets();
 
     public void EnqueueConversionIntent(
         BlockPos pos,
@@ -89,19 +91,21 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         ArchimedesPerf.AddCount("water.claims.attempted");
+        if (IsVanillaLocked(pos, familyId))
+        {
+            ArchimedesPerf.AddCount("water.claims.rejected.lockedVanilla");
+            CaptureVanillaLocksAround(pos, familyId);
+            return false;
+        }
+
         if (!playerIntent && !HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(pos, familyId))
         {
             ArchimedesPerf.AddCount("water.claims.rejected.notFrontier");
             return false;
         }
 
-        if (!playerIntent && LooksLikeNaturalVanillaBody(pos, familyId))
-        {
-            ArchimedesPerf.AddCount("water.claims.rejected.detectedVanillaBody");
-            return false;
-        }
-
         SetManagedWaterVariant(pos, familyId, "still", 7, triggerUpdates: false);
+        CaptureVanillaLocksAround(pos, familyId);
 
         bool assigned = false;
         if (!string.IsNullOrWhiteSpace(ownerHintControllerId))
@@ -142,19 +146,65 @@ public sealed partial class ArchimedesWaterNetworkManager
         return true;
     }
 
-    private bool LooksLikeNaturalVanillaBody(BlockPos pos, string familyId)
+    public bool IsVanillaLocked(BlockPos pos, string familyId)
+    {
+        string key = PosKey(pos);
+        return lockedVanillaFamilyByPos.TryGetValue(key, out string? lockedFamily) &&
+               string.Equals(lockedFamily, familyId, StringComparison.Ordinal);
+    }
+
+    public int CountLockedVanillaNeighbors(BlockPos pos, string familyId)
     {
         int count = 0;
-        foreach (BlockFacing face in BlockFacing.ALLFACES)
+        foreach (BlockPos delta in LockCaptureOffsets)
         {
-            Block fluid = api.World.BlockAccessor.GetBlock(pos.AddCopy(face), BlockLayersAccess.Fluid);
-            if (IsVanillaSelfSustainingSourceForFamily(fluid, familyId))
+            BlockPos neighbor = new(pos.X + delta.X, pos.Y + delta.Y, pos.Z + delta.Z);
+            if (IsVanillaLocked(neighbor, familyId))
             {
                 count++;
             }
         }
 
-        return count >= Math.Max(1, config.Water.VanillaBodyNeighborThreshold);
+        return count;
+    }
+
+    public void CaptureVanillaLocksAround(BlockPos centerPos, string familyId)
+    {
+        foreach (BlockPos delta in LockCaptureOffsets)
+        {
+            BlockPos candidate = new(centerPos.X + delta.X, centerPos.Y + delta.Y, centerPos.Z + delta.Z);
+            Block fluid = api.World.BlockAccessor.GetBlock(candidate, BlockLayersAccess.Fluid);
+            if (!TryResolveVanillaWaterFamily(fluid, out string vanillaFamilyId) ||
+                !string.Equals(vanillaFamilyId, familyId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            lockedVanillaFamilyByPos[PosKey(candidate)] = familyId;
+            ArchimedesPerf.AddCount("water.vanillaLocks.captured");
+        }
+    }
+
+    private static List<BlockPos> BuildLockCaptureOffsets()
+    {
+        List<BlockPos> offsets = new();
+        for (int x = -1; x <= 1; x++)
+        {
+            for (int y = -1; y <= 1; y++)
+            {
+                for (int z = -1; z <= 1; z++)
+                {
+                    if (x == 0 && y == 0 && z == 0)
+                    {
+                        continue;
+                    }
+
+                    offsets.Add(new BlockPos(x, y, z));
+                }
+            }
+        }
+
+        return offsets;
     }
 
     private string? ResolveDomainLeaderControllerId(BlockPos sourcePos, string familyId, IEnumerable<string> connectedWaterKeys)

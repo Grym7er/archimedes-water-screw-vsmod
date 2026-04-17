@@ -10,7 +10,6 @@
     "minimumNetworkSpeed": 0.001,
     "maxVanillaConversionPasses": 32,
     "vanillaClaimHaloDepth": 2,
-    "vanillaBodyNeighborThreshold": 5,
     "intentQueueMaxPerGlobalTick": 96,
     "enableRelaySources": true,
     "maxRelayPromotionsPerTick": 1,

@@ -12,7 +12,6 @@
         "water/maxScrewLength": "MAX_SCREW_LENGTH",
         "water/maxVanillaConversionPasses": "MAX_VANILLA_CONVERSION_PASSES",
         "water/vanillaClaimHaloDepth": "VANILLA_CLAIM_HALO_DEPTH",
-        "water/vanillaBodyNeighborThreshold": "VANILLA_BODY_NEIGHBOR_THRESHOLD",
         "water/intentQueueMaxPerGlobalTick": "INTENT_QUEUE_MAX_PER_GLOBAL_TICK",
         "water/maxRelayPromotionsPerTick": "MAX_RELAY_PROMOTIONS_PER_TICK",
         "water/maxRelaySourcesPerController": "MAX_RELAY_SOURCES_PER_CONTROLLER"
@@ -150,22 +149,10 @@
           "step": 1
         }
       },
-      "VANILLA_BODY_NEIGHBOR_THRESHOLD": {
-        "name": "vanilla-body-neighbor-threshold",
-        "ingui": "archimedes_screw:config-vanilla-body-neighbor-threshold",
-        "weight": 4.61,
-        "comment": "If same-family vanilla neighbors around candidate meet/exceed this count, treat as natural body and skip claiming.",
-        "default": 5,
-        "range": {
-          "min": 1,
-          "max": 6,
-          "step": 1
-        }
-      },
       "INTENT_QUEUE_MAX_PER_GLOBAL_TICK": {
         "name": "intent-queue-max-per-global-tick",
         "ingui": "archimedes_screw:config-intent-queue-max-per-global-tick",
-        "weight": 4.62,
+        "weight": 4.61,
         "comment": "Maximum queued conversion intents processed each global water tick.",
         "default": 96,
         "range": {
