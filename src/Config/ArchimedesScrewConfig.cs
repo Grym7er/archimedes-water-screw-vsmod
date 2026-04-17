@@ -40,6 +40,21 @@ public sealed class ArchimedesScrewConfig
         public int MaxVanillaConversionPasses { get; set; } = 32;
 
         /// <summary>
+        /// Max vanilla traversal depth away from the managed frontier when evaluating claims.
+        /// </summary>
+        public int VanillaClaimHaloDepth { get; set; } = 2;
+
+        /// <summary>
+        /// If nearby vanilla-family fluid neighbors meet/exceed this count, treat cell as natural body and do not claim.
+        /// </summary>
+        public int VanillaBodyNeighborThreshold { get; set; } = 5;
+
+        /// <summary>
+        /// Max queued conversion intents processed each global water tick.
+        /// </summary>
+        public int IntentQueueMaxPerGlobalTick { get; set; } = 96;
+
+        /// <summary>
         /// Enables/disables relay source creation for long-distance aqueduct support.
         /// </summary>
         public bool EnableRelaySources { get; set; } = true;
@@ -103,6 +118,9 @@ public sealed class ArchimedesScrewConfig
             MaxScrewLength = source.MaxScrewLength;
             MinimumNetworkSpeed = source.MinimumNetworkSpeed;
             MaxVanillaConversionPasses = source.MaxVanillaConversionPasses;
+            VanillaClaimHaloDepth = source.VanillaClaimHaloDepth;
+            VanillaBodyNeighborThreshold = source.VanillaBodyNeighborThreshold;
+            IntentQueueMaxPerGlobalTick = source.IntentQueueMaxPerGlobalTick;
             EnableRelaySources = source.EnableRelaySources;
             MaxRelayPromotionsPerTick = source.MaxRelayPromotionsPerTick;
             MaxRelaySourcesPerController = source.MaxRelaySourcesPerController;

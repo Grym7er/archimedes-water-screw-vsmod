@@ -129,7 +129,12 @@ public sealed partial class ArchimedesWaterNetworkManager
 
         foreach (BlockPos pos in sourcePositions)
         {
-            sourceOwnerByPos[PosKey(pos)] = controllerId;
+            string key = PosKey(pos);
+            sourceOwnerByPos[key] = controllerId;
+            if (!sourceProvenanceByPos.ContainsKey(key))
+            {
+                sourceProvenanceByPos[key] = ManagedSourceProvenance.ControllerSeedOrRelay;
+            }
         }
     }
 
@@ -152,6 +157,7 @@ public sealed partial class ArchimedesWaterNetworkManager
         foreach (string key in ownedKeys)
         {
             sourceOwnerByPos.Remove(key);
+            sourceProvenanceByPos.Remove(key);
         }
 
         if (ownedKeys.Count > 0)

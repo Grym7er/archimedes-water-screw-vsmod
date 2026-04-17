@@ -31,10 +31,17 @@ internal static class ArchimedesWaterBlockHelper
         }
 
         manager.OnManagedWaterRemoved(pos);
-        manager.TryConvertVanillaSourceUsingAdjacentManagedFamilyForPlayer(
-            pos,
-            "player-placed source replaced managed water"
-        );
+        Block fluid = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (manager.TryResolveVanillaWaterFamily(fluid, out string vanillaFamilyId))
+        {
+            manager.EnqueueConversionIntent(
+                pos,
+                vanillaFamilyId,
+                ownerHintControllerId: null,
+                reason: "player-placed source replaced managed water",
+                playerIntent: true
+            );
+        }
     }
 
     public static void TryConvertNeighbourSource(IWorldAccessor world, BlockPos neibpos, BlockPos referencePos)
@@ -56,10 +63,12 @@ internal static class ArchimedesWaterBlockHelper
             return;
         }
 
-        manager.TryConvertVanillaSourceForPlayer(
+        manager.EnqueueConversionIntent(
             neibpos,
             familyId,
-            "player-placed source adjacent to managed water"
+            ownerHintControllerId: null,
+            reason: "player-placed source adjacent to managed water",
+            playerIntent: true
         );
     }
 }

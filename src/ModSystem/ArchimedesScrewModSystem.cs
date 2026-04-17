@@ -98,7 +98,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     {
         ArchimedesScrewConfig.WaterConfig w = config.Water;
         api.Logger.Notification(
-            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, enableRelaySources={10}, maxRelayPromotionsPerTick={11}, maxRelaySourcesPerController={12}, requiredMechPowerForMaxRelay={13}, relayPowerHysteresisPct={14}, relayCandidateOrderingMode={15}, debugControllerStatsOnInteract={16}, enableWaterfallCompat={17}, waterfallCompatDebug={18}, verboseDebug={19}",
+            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, vanillaClaimHaloDepth={10}, vanillaBodyNeighborThreshold={11}, intentQueueMaxPerGlobalTick={12}, enableRelaySources={13}, maxRelayPromotionsPerTick={14}, maxRelaySourcesPerController={15}, requiredMechPowerForMaxRelay={16}, relayPowerHysteresisPct={17}, relayCandidateOrderingMode={18}, debugControllerStatsOnInteract={19}, enableWaterfallCompat={20}, waterfallCompatDebug={21}, verboseDebug={22}",
             LogPrefix,
             w.FastTickMs,
             w.IdleTickMs,
@@ -109,6 +109,9 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             w.MaxScrewLength,
             w.MinimumNetworkSpeed,
             w.MaxVanillaConversionPasses,
+            w.VanillaClaimHaloDepth,
+            w.VanillaBodyNeighborThreshold,
+            w.IntentQueueMaxPerGlobalTick,
             w.EnableRelaySources,
             w.MaxRelayPromotionsPerTick,
             w.MaxRelaySourcesPerController,
@@ -564,6 +567,15 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 return true;
             case "MAX_VANILLA_CONVERSION_PASSES":
                 target.MaxVanillaConversionPasses = tree.GetInt("value");
+                return true;
+            case "VANILLA_CLAIM_HALO_DEPTH":
+                target.VanillaClaimHaloDepth = tree.GetInt("value");
+                return true;
+            case "VANILLA_BODY_NEIGHBOR_THRESHOLD":
+                target.VanillaBodyNeighborThreshold = tree.GetInt("value");
+                return true;
+            case "INTENT_QUEUE_MAX_PER_GLOBAL_TICK":
+                target.IntentQueueMaxPerGlobalTick = tree.GetInt("value");
                 return true;
             case "ENABLE_RELAY_SOURCES":
                 target.EnableRelaySources = tree.GetBool("value");
