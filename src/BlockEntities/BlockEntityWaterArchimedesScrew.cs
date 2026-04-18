@@ -1073,6 +1073,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                     continue;
                 }
 
+                if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(Api!.World, current, next))
+                {
+                    continue;
+                }
+
                 distanceByKey[nextKey] = currentDistance + 1;
                 queue.Enqueue(next);
             }
@@ -1389,7 +1394,13 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int count = 0;
         foreach (BlockFacing face in BlockFacing.HORIZONTALS)
         {
-            Block fluid = Api.World.BlockAccessor.GetBlock(pos.AddCopy(face), BlockLayersAccess.Fluid);
+            BlockPos neighbourPos = pos.AddCopy(face);
+            if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(Api.World, pos, neighbourPos))
+            {
+                continue;
+            }
+
+            Block fluid = Api.World.BlockAccessor.GetBlock(neighbourPos, BlockLayersAccess.Fluid);
             if (!waterManager.IsArchimedesWaterBlock(fluid))
             {
                 continue;

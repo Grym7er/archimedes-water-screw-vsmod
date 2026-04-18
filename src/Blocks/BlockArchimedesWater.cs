@@ -63,6 +63,11 @@ internal static class ArchimedesWaterBlockHelper
             return;
         }
 
+        if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(world, referencePos, neibpos))
+        {
+            return;
+        }
+
         manager.EnqueueConversionIntent(
             neibpos,
             familyId,

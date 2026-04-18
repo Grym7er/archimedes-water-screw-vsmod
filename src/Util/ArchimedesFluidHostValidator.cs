@@ -5,6 +5,21 @@ namespace ArchimedesScrew;
 
 internal static class ArchimedesFluidHostValidator
 {
+    public static bool CanLiquidsTouchByBarrier(IWorldAccessor world, BlockPos fromPos, BlockPos toPos)
+    {
+        if (!TryGetCardinalFacing(fromPos, toPos, out BlockFacing facing))
+        {
+            return false;
+        }
+
+        IBlockAccessor ba = world.BlockAccessor;
+        Block fromSolid = ba.GetBlock(fromPos);
+        Block toSolid = ba.GetBlock(toPos);
+        float fromBarrier = fromSolid.GetLiquidBarrierHeightOnSide(facing, fromPos);
+        float toBarrier = toSolid.GetLiquidBarrierHeightOnSide(facing.Opposite, toPos);
+        return fromBarrier < 1f && toBarrier < 1f;
+    }
+
 
     public static bool IsFluidHostCellCompatible(
         IWorldAccessor world,
@@ -45,6 +60,52 @@ internal static class ArchimedesFluidHostValidator
     private static bool IsVanillaWaterBlock(Block block)
     {
         return block.IsLiquid() && ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _);
+    }
+
+    private static bool TryGetCardinalFacing(BlockPos fromPos, BlockPos toPos, out BlockFacing facing)
+    {
+        int dx = toPos.X - fromPos.X;
+        int dy = toPos.Y - fromPos.Y;
+        int dz = toPos.Z - fromPos.Z;
+
+        facing = null!;
+        if (dx == 1 && dy == 0 && dz == 0)
+        {
+            facing = BlockFacing.EAST;
+            return true;
+        }
+
+        if (dx == -1 && dy == 0 && dz == 0)
+        {
+            facing = BlockFacing.WEST;
+            return true;
+        }
+
+        if (dx == 0 && dy == 1 && dz == 0)
+        {
+            facing = BlockFacing.UP;
+            return true;
+        }
+
+        if (dx == 0 && dy == -1 && dz == 0)
+        {
+            facing = BlockFacing.DOWN;
+            return true;
+        }
+
+        if (dx == 0 && dy == 0 && dz == 1)
+        {
+            facing = BlockFacing.SOUTH;
+            return true;
+        }
+
+        if (dx == 0 && dy == 0 && dz == -1)
+        {
+            facing = BlockFacing.NORTH;
+            return true;
+        }
+
+        return false;
     }
 
 }

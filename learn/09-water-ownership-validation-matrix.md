@@ -3,6 +3,7 @@
 This matrix validates the unified (non-legacy) water ownership architecture:
 
 - strict first-touch vanilla locking,
+- barrier-passability-based touching (blocked liquid interfaces are non-touching),
 - deterministic claim-domain arbitration,
 - provenance tracking,
 - conversion-intent queue processing.
@@ -35,23 +36,27 @@ This matrix validates the unified (non-legacy) water ownership architecture:
    - Expect no cross-family claim assignment.
    - Expect each family remains isolated under policy checks.
 
-6. Player bucket placement next to managed water
+6. Player bucket placement next to managed water (passable interface)
    - Expect conversion intent queued, then converted by central tick.
    - Expect ownership assignment without immediate reversion churn.
 
-7. Power loss and recovery
+7. Player bucket placement with blocked interface (aqueduct wall/floor separation)
+   - Place vanilla source coordinate-adjacent to managed water but with a non-passable surface between them.
+   - Expect no conversion intent side effects and no claim/conversion.
+
+8. Power loss and recovery
    - Expect unsupported managed sources to drain.
    - Expect resumed claims after power restore to follow frontier policy.
 
-8. Chunk boundary behavior
+9. Chunk boundary behavior
    - Move player to unload/reload neighboring chunks around managed network.
    - Expect ownership/provenance/vanilla-lock persistence and deterministic reassignment.
 
-9. Save/reload cycle
+10. Save/reload cycle
    - Save world with active managed network.
    - Reload and verify ownership/provenance/vanilla-lock persistence consistency.
 
-10. Corrupt block entity payload resilience
+11. Corrupt block entity payload resilience
    - Inject malformed BE arrays (or reproduce from broken save) for owned/relay/seed payloads.
    - Expect decode to skip corrupt payload with warning and no client crash.
 
@@ -60,6 +65,7 @@ This matrix validates the unified (non-legacy) water ownership architecture:
 - Build succeeds with zero compile errors.
 - No persistent ownership oscillation under contention.
 - Locked vanilla bodies are never converted.
+- Blocked interfaces (side or vertical) never count as touching for convert/seize/connectivity.
 - Player-intent conversions continue to work.
 - No unowned managed-source accumulation over steady-state runtime.
 - Malformed BE payloads do not crash client chunk packet handling.

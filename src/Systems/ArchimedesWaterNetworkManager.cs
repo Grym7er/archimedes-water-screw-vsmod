@@ -738,6 +738,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                     continue;
                 }
 
+                if (!CanLiquidsTouch(current, next))
+                {
+                    continue;
+                }
+
                 Block fluidBlock = api.World.BlockAccessor.GetBlock(next, BlockLayersAccess.Fluid);
                 if (!IsArchimedesWaterBlock(fluidBlock))
                 {
@@ -1120,6 +1125,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                     continue;
                 }
 
+                if (!CanLiquidsTouch(pos, adjacentPos))
+                {
+                    continue;
+                }
+
                 if (!TryConvertVanillaSource(adjacentPos, familyId, ownerHintControllerId))
                 {
                     // A self-sustaining managed source (height 6/7) can appear via fluid simulation
@@ -1186,8 +1196,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         Queue<(BlockPos Pos, int VanillaDepth)> queue = new();
         int haloDepth = Math.Max(0, config.Water.VanillaClaimHaloDepth);
 
-        void TryEnqueue(BlockPos p, int vanillaDepth)
+        void TryEnqueue(BlockPos p, int vanillaDepth, BlockPos? fromPos = null)
         {
+            if (fromPos != null && !CanLiquidsTouch(fromPos, p))
+            {
+                return;
+            }
+
             string key = PosKey(p);
             if (visited.Contains(key))
             {
@@ -1217,7 +1232,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             TryEnqueue(origin, 0);
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
-                TryEnqueue(origin.AddCopy(face), 0);
+                TryEnqueue(origin.AddCopy(face), 0, origin);
             }
         }
 
@@ -1283,7 +1298,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
-                TryEnqueue(p.AddCopy(face), vanillaDepth + 1);
+                TryEnqueue(p.AddCopy(face), vanillaDepth + 1, p);
             }
         }
 
@@ -1334,7 +1349,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         foreach (BlockFacing face in BlockFacing.ALLFACES)
         {
-            Block neighbourFluid = api.World.BlockAccessor.GetBlock(pos.AddCopy(face), BlockLayersAccess.Fluid);
+            BlockPos neighbourPos = pos.AddCopy(face);
+            if (!CanLiquidsTouch(pos, neighbourPos))
+            {
+                continue;
+            }
+
+            Block neighbourFluid = api.World.BlockAccessor.GetBlock(neighbourPos, BlockLayersAccess.Fluid);
             if (!TryResolveManagedWaterFamily(neighbourFluid, out string familyId))
             {
                 continue;
@@ -1536,12 +1557,22 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                string.Equals(managedFamilyId, familyId, StringComparison.Ordinal);
     }
 
+    private bool CanLiquidsTouch(BlockPos fromPos, BlockPos toPos)
+    {
+        return ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(api.World, fromPos, toPos);
+    }
+
     private bool HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(BlockPos pos, string familyId)
     {
         int ownedMatches = 0;
         foreach (BlockFacing face in BlockFacing.HORIZONTALS)
         {
             BlockPos adjacentPos = pos.AddCopy(face);
+            if (!CanLiquidsTouch(pos, adjacentPos))
+            {
+                continue;
+            }
+
             Block adjacentFluid = api.World.BlockAccessor.GetBlock(adjacentPos, BlockLayersAccess.Fluid);
             if (!IsArchimedesSelfSustainingSourceBlock(adjacentFluid) ||
                 !TryResolveManagedWaterFamily(adjacentFluid, out string managedFamilyId) ||
