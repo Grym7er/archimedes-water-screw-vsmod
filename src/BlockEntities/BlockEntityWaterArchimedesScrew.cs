@@ -1056,30 +1056,39 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return distanceByKey;
         }
 
-        Queue<BlockPos> queue = new();
+        Queue<long> queue = new();
         distanceByKey[seedKey] = 0;
-        queue.Enqueue(seedPos.Copy());
+        queue.Enqueue(seedKey);
+        BlockPos currentPos = new(0);
+        BlockPos nextPos = new(0);
         while (queue.Count > 0)
         {
-            BlockPos current = queue.Dequeue();
-            long currentKey = ArchimedesPosKey.Pack(current);
+            long currentKey = queue.Dequeue();
+            ArchimedesPosKey.Unpack(currentKey, currentPos);
             int currentDistance = distanceByKey[currentKey];
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
-                BlockPos next = current.AddCopy(face);
-                long nextKey = ArchimedesPosKey.Pack(next);
+                int nextX = currentPos.X + face.Normali.X;
+                int nextY = currentPos.Y + face.Normali.Y;
+                int nextZ = currentPos.Z + face.Normali.Z;
+                if (!ArchimedesPosKey.TryPack(nextX, nextY, nextZ, out long nextKey))
+                {
+                    continue;
+                }
+
                 if (!connectedWaterKeys.Contains(nextKey) || distanceByKey.ContainsKey(nextKey))
                 {
                     continue;
                 }
 
-                if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(Api!.World, current, next))
+                nextPos.Set(nextX, nextY, nextZ);
+                if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(Api!.World, currentPos, nextPos))
                 {
                     continue;
                 }
 
                 distanceByKey[nextKey] = currentDistance + 1;
-                queue.Enqueue(next);
+                queue.Enqueue(nextKey);
             }
         }
 
@@ -1369,9 +1378,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         int count = 0;
+        BlockPos neighbourPos = new(0);
         foreach (BlockFacing face in BlockFacing.HORIZONTALS)
         {
-            BlockPos neighbourPos = pos.AddCopy(face);
+            neighbourPos.Set(pos.X + face.Normali.X, pos.Y + face.Normali.Y, pos.Z + face.Normali.Z);
             if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(Api.World, pos, neighbourPos))
             {
                 continue;

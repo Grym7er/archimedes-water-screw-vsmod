@@ -698,9 +698,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return new ConnectedManagedWaterResult(visited, positionsByKey, false, 0);
         }
 
-        Queue<BlockPos> queue = new();
-        queue.Enqueue(startPos.Copy());
-        visited.Add(ArchimedesPosKey.Pack(startPos));
+        Queue<long> queue = new();
+        long startKey = ArchimedesPosKey.Pack(startPos);
+        queue.Enqueue(startKey);
+        visited.Add(startKey);
+        BlockPos currentPos = new(0);
+        BlockPos nextPos = new(0);
         int visitedManagedCount = 0;
         bool isTruncated = false;
 
@@ -718,33 +721,40 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 break;
             }
 
-            BlockPos current = queue.Dequeue();
-            long key = ArchimedesPosKey.Pack(current);
-            positionsByKey[key] = current.Copy();
+            long key = queue.Dequeue();
+            ArchimedesPosKey.Unpack(key, currentPos);
+            positionsByKey[key] = new BlockPos(currentPos.X, currentPos.Y, currentPos.Z);
             visitedManagedCount++;
 
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
-                BlockPos next = current.AddCopy(face);
-                long nextKey = ArchimedesPosKey.Pack(next);
+                int nextX = currentPos.X + face.Normali.X;
+                int nextY = currentPos.Y + face.Normali.Y;
+                int nextZ = currentPos.Z + face.Normali.Z;
+                if (!ArchimedesPosKey.TryPack(nextX, nextY, nextZ, out long nextKey))
+                {
+                    continue;
+                }
+
                 if (visited.Contains(nextKey))
                 {
                     continue;
                 }
 
-                if (!CanLiquidsTouch(current, next))
+                nextPos.Set(nextX, nextY, nextZ);
+                if (!CanLiquidsTouch(currentPos, nextPos))
                 {
                     continue;
                 }
 
-                Block fluidBlock = api.World.BlockAccessor.GetBlock(next, BlockLayersAccess.Fluid);
+                Block fluidBlock = api.World.BlockAccessor.GetBlock(nextPos, BlockLayersAccess.Fluid);
                 if (!IsArchimedesWaterBlock(fluidBlock))
                 {
                     continue;
                 }
 
                 visited.Add(nextKey);
-                queue.Enqueue(next);
+                queue.Enqueue(nextKey);
             }
         }
 
@@ -1091,6 +1101,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         int converted = 0;
         HashSet<long> convertedKeys = new();
         Dictionary<long, BlockPos> connectedWater = connectedResult.PositionsByKey;
+        BlockPos adjacentPos = new(0);
         foreach (BlockPos pos in connectedWater.Values)
         {
             Block currentFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
@@ -1101,13 +1112,20 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
-                BlockPos adjacentPos = pos.AddCopy(face);
-                long adjacentKey = ArchimedesPosKey.Pack(adjacentPos);
+                int ax = pos.X + face.Normali.X;
+                int ay = pos.Y + face.Normali.Y;
+                int az = pos.Z + face.Normali.Z;
+                if (!ArchimedesPosKey.TryPack(ax, ay, az, out long adjacentKey))
+                {
+                    continue;
+                }
+
                 if (!convertedKeys.Add(adjacentKey))
                 {
                     continue;
                 }
 
+                adjacentPos.Set(ax, ay, az);
                 if (!CanLiquidsTouch(pos, adjacentPos))
                 {
                     continue;
@@ -1176,23 +1194,34 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         IBlockAccessor ba = api.World.BlockAccessor;
         HashSet<long> visited = new();
-        Queue<(BlockPos Pos, int VanillaDepth)> queue = new();
+        Queue<(long Key, int VanillaDepth)> queue = new();
+        BlockPos fromScratch = new(0);
+        BlockPos posScratch = new(0);
         int haloDepth = Math.Max(0, config.Water.VanillaClaimHaloDepth);
 
-        void TryEnqueue(BlockPos p, int vanillaDepth, BlockPos? fromPos = null)
+        void TryEnqueue(int x, int y, int z, int vanillaDepth, long? fromKey = null)
         {
-            if (fromPos != null && !CanLiquidsTouch(fromPos, p))
+            if (!ArchimedesPosKey.TryPack(x, y, z, out long key))
             {
                 return;
             }
 
-            long key = ArchimedesPosKey.Pack(p);
+            ArchimedesPosKey.Unpack(key, posScratch);
+            if (fromKey != null)
+            {
+                ArchimedesPosKey.Unpack(fromKey.Value, fromScratch);
+                if (!CanLiquidsTouch(fromScratch, posScratch))
+                {
+                    return;
+                }
+            }
+
             if (visited.Contains(key))
             {
                 return;
             }
 
-            Block fluid = ba.GetBlock(p, BlockLayersAccess.Fluid);
+            Block fluid = ba.GetBlock(posScratch, BlockLayersAccess.Fluid);
             if (!IsFamilyLiquidBlock(fluid, familyId))
             {
                 return;
@@ -1207,15 +1236,26 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
 
             visited.Add(key);
-            queue.Enqueue((p.Copy(), nextDepth));
+            queue.Enqueue((key, nextDepth));
         }
 
         foreach (BlockPos origin in probeOrigins)
         {
-            TryEnqueue(origin, 0);
+            if (!ArchimedesPosKey.TryPack(origin.X, origin.Y, origin.Z, out long originKey))
+            {
+                continue;
+            }
+
+            TryEnqueue(origin.X, origin.Y, origin.Z, 0);
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
-                TryEnqueue(origin.AddCopy(face), 0, origin);
+                TryEnqueue(
+                    origin.X + face.Normali.X,
+                    origin.Y + face.Normali.Y,
+                    origin.Z + face.Normali.Z,
+                    0,
+                    originKey
+                );
             }
         }
 
@@ -1228,24 +1268,24 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         int dequeued = 0;
         while (queue.Count > 0 && dequeued < maxVisit)
         {
-            (BlockPos p, int vanillaDepth) = queue.Dequeue();
+            (long pkey, int vanillaDepth) = queue.Dequeue();
+            ArchimedesPosKey.Unpack(pkey, posScratch);
             dequeued++;
 
-            Block fluid = ba.GetBlock(p, BlockLayersAccess.Fluid);
-            long pkey = ArchimedesPosKey.Pack(p);
+            Block fluid = ba.GetBlock(posScratch, BlockLayersAccess.Fluid);
             bool isUnownedManagedSelfSustaining =
                 IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
                 !sourceOwnerByPos.ContainsKey(pkey);
-            int lockedNeighbors = CountLockedVanillaNeighbors(p, familyId);
+            int lockedNeighbors = CountLockedVanillaNeighbors(posScratch, familyId);
 
             if (isUnownedManagedSelfSustaining &&
-                (IsVanillaLocked(p, familyId) || lockedNeighbors > 0))
+                (IsVanillaLocked(posScratch, familyId) || lockedNeighbors > 0))
             {
                 if (TryGetVanillaEquivalent(fluid, out Block vanillaEquivalent))
                 {
-                    api.World.BlockAccessor.SetBlock(vanillaEquivalent.Id, p, BlockLayersAccess.Fluid);
-                    TriggerLiquidUpdates(p, vanillaEquivalent);
-                    CaptureVanillaLocksAround(p, familyId);
+                    api.World.BlockAccessor.SetBlock(vanillaEquivalent.Id, posScratch, BlockLayersAccess.Fluid);
+                    TriggerLiquidUpdates(posScratch, vanillaEquivalent);
+                    CaptureVanillaLocksAround(posScratch, familyId);
                 }
 
                 continue;
@@ -1253,7 +1293,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
             bool claimed = false;
             if (IsVanillaSelfSustainingSourceForFamily(fluid, familyId) &&
-                TryConvertVanillaSourceForPlayer(p, familyId, "connected-family-fluid sweep (drain context)"))
+                TryConvertVanillaSourceForPlayer(posScratch, familyId, "connected-family-fluid sweep (drain context)"))
             {
                 claimed = true;
             }
@@ -1267,7 +1307,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 else
                 {
                     // Unowned archimedes still blocks (not vanilla water-*) need ownership so drain can release them.
-                    if (EnsureSourceOwned(ownerHintControllerId, p, familyId))
+                    if (EnsureSourceOwned(ownerHintControllerId, posScratch, familyId))
                     {
                         claimed = true;
                     }
@@ -1281,7 +1321,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
-                TryEnqueue(p.AddCopy(face), vanillaDepth + 1, p);
+                TryEnqueue(
+                    posScratch.X + face.Normali.X,
+                    posScratch.Y + face.Normali.Y,
+                    posScratch.Z + face.Normali.Z,
+                    vanillaDepth + 1,
+                    pkey
+                );
             }
         }
 
@@ -1548,9 +1594,18 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private bool HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(BlockPos pos, string familyId)
     {
         int ownedMatches = 0;
+        BlockPos adjacentPos = new(0);
         foreach (BlockFacing face in BlockFacing.HORIZONTALS)
         {
-            BlockPos adjacentPos = pos.AddCopy(face);
+            int ax = pos.X + face.Normali.X;
+            int ay = pos.Y + face.Normali.Y;
+            int az = pos.Z + face.Normali.Z;
+            if (!ArchimedesPosKey.TryPack(ax, ay, az, out long adjacentKey))
+            {
+                continue;
+            }
+
+            adjacentPos.Set(ax, ay, az);
             if (!CanLiquidsTouch(pos, adjacentPos))
             {
                 continue;
@@ -1564,7 +1619,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 continue;
             }
 
-            if (!sourceOwnerByPos.ContainsKey(ArchimedesPosKey.Pack(adjacentPos)))
+            if (!sourceOwnerByPos.ContainsKey(adjacentKey))
             {
                 continue;
             }
@@ -1804,9 +1859,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         api.World.BlockAccessor.TriggerNeighbourBlockUpdate(pos);
         api.World.BlockAccessor.MarkBlockDirty(pos);
 
+        BlockPos neighbourPos = new(0);
         foreach (BlockFacing face in BlockFacing.ALLFACES)
         {
-            BlockPos neighbourPos = pos.AddCopy(face);
+            neighbourPos.Set(pos.X + face.Normali.X, pos.Y + face.Normali.Y, pos.Z + face.Normali.Z);
 
             Block neighbourSolid = api.World.BlockAccessor.GetBlock(neighbourPos);
             if (neighbourSolid.Id != 0)
@@ -1830,9 +1886,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         placedFluid.OnNeighbourBlockChange(api.World, pos, pos);
 
+        BlockPos neighbourPos = new(0);
         foreach (BlockFacing face in BlockFacing.ALLFACES)
         {
-            BlockPos neighbourPos = pos.AddCopy(face);
+            neighbourPos.Set(pos.X + face.Normali.X, pos.Y + face.Normali.Y, pos.Z + face.Normali.Z);
 
             Block neighbourSolid = api.World.BlockAccessor.GetBlock(neighbourPos);
             if (neighbourSolid.Id != 0)

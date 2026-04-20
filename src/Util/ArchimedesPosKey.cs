@@ -78,6 +78,27 @@ public static class ArchimedesPosKey
         return ((long)x << xShift) | ((long)y << yShift) | (long)z;
     }
 
+    public static bool TryPack(int x, int y, int z, out long packed)
+    {
+        EnsureInitialized();
+        if (!IsInBounds(x, y, z))
+        {
+            packed = 0;
+            return false;
+        }
+
+        packed = ((long)x << xShift) | ((long)y << yShift) | (long)z;
+        return true;
+    }
+
+    public static bool IsInBounds(int x, int y, int z)
+    {
+        EnsureInitialized();
+        return x >= 0 && x < mapSizeX &&
+               y >= 0 && y < mapSizeY &&
+               z >= 0 && z < mapSizeZ;
+    }
+
     public static void Unpack(long key, BlockPos target)
     {
         EnsureInitialized();

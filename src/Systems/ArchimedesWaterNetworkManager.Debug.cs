@@ -87,9 +87,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                 for (int z = minZ; z <= maxZ; z++)
                 {
                     BlockPos pos = new(x, y, z);
-                    Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-                    if (!IsArchimedesRelayFlowCandidate(fluid) ||
-                        !ArchimedesRelayAdjacency.IsRelaySupportAndAdjacentWhitelistSatisfied(api.World, pos))
+                    if (!ArchimedesRelayCandidateRules.IsPromotableRelayCandidate(api.World, pos, this))
                     {
                         continue;
                     }
