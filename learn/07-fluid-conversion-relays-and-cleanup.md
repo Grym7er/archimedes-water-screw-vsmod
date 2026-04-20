@@ -56,6 +56,12 @@ Relay logic is configurable and allows long aqueduct-like flows:
 - scaling with mechanical power (`RequiredMechPowerForMaxRelay`),
 - anti-thrash via hysteresis (`RelayPowerHysteresisPct`).
 
+Relay candidate eligibility is intentionally strict to match barrier semantics used elsewhere in the mod:
+
+- candidate fluid must pass `IsArchimedesRelayFlowCandidate(...)`,
+- the block directly below must exist and block liquids on its UP face (`GetLiquidBarrierHeightOnSide(BlockFacing.UP, belowPos) >= 1f`),
+- neither the below solid layer nor below fluid layer may contain intake-family water (vanilla or Archimedes managed).
+
 These tunables are defined in `src/Config/ArchimedesScrewConfig.cs` lines 45-71 and mirrored in `assets/archimedes_screw/config/settings.json`.
 
 ## Cleanup Paths

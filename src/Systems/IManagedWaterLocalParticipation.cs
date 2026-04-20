@@ -37,12 +37,23 @@ internal sealed class DefaultManagedWaterLocalParticipation : IManagedWaterLocal
             return false;
         }
 
-        if (IsWaterBlock(belowSolid, manager))
+        if (!HasSealedUpperBarrier(belowSolid, belowPos))
+        {
+            return false;
+        }
+
+        Block belowFluid = world.BlockAccessor.GetBlock(belowPos, BlockLayersAccess.Fluid);
+        if (IsWaterBlock(belowSolid, manager) || IsWaterBlock(belowFluid, manager))
         {
             return false;
         }
 
         return true;
+    }
+
+    private static bool HasSealedUpperBarrier(Block block, BlockPos pos)
+    {
+        return block.GetLiquidBarrierHeightOnSide(BlockFacing.UP, pos) >= 1f;
     }
 
     private static bool IsWaterBlock(Block block, ArchimedesWaterNetworkManager manager)

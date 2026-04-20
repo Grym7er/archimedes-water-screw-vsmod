@@ -31,13 +31,12 @@ internal static class ArchimedesFluidHostValidator
         Block targetSolid = ba.GetBlock(targetPos);
         Block targetFluid = ba.GetBlock(targetPos, BlockLayersAccess.Fluid);
 
-        bool solidClear = targetSolid.Id == 0 || targetSolid.ForFluidsLayer || ArchimedesWaterFamilies.IsManagedWater(targetSolid);
         bool fluidClear = targetFluid.Id == 0 ||
                           ArchimedesWaterFamilies.IsManagedWater(targetFluid) ||
                           IsVanillaWaterBlock(targetFluid);
+        bool hostableCell = IsHostableCellByGeometry(targetSolid, targetPos);
         bool hasDirectionalContext = sourcePos != null && sourceFacing != null;
-        bool allowSolidByDirectionalBarrier = !solidClear && hasDirectionalContext;
-        if (!fluidClear || (!solidClear && !allowSolidByDirectionalBarrier))
+        if (!fluidClear || !hostableCell)
         {
             return false;
         }
@@ -55,6 +54,26 @@ internal static class ArchimedesFluidHostValidator
             : sourceSolid.GetLiquidBarrierHeightOnSide(sourceFacing!, sourcePos!);
         float targetBarrier = targetSolid.GetLiquidBarrierHeightOnSide(sourceFacing!.Opposite, targetPos);
         return sourceBarrier < 1f && targetBarrier < 1f;
+    }
+
+    // Use physical liquid-hostability instead of block allowlists:
+    // if any face permits liquid transfer, the cell can host managed water.
+    private static bool IsHostableCellByGeometry(Block solidBlock, BlockPos pos)
+    {
+        if (solidBlock.Id == 0 || solidBlock.ForFluidsLayer || ArchimedesWaterFamilies.IsManagedWater(solidBlock))
+        {
+            return true;
+        }
+
+        foreach (BlockFacing face in BlockFacing.ALLFACES)
+        {
+            if (solidBlock.GetLiquidBarrierHeightOnSide(face, pos) < 1f)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsVanillaWaterBlock(Block block)
