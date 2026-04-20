@@ -35,7 +35,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                         continue;
                     }
 
-                    string key = PosKey(pos);
+                    long key = ArchimedesPosKey.Pack(pos);
                     bool isOwned = sourceOwnerByPos.TryGetValue(key, out string? ownerId);
                     bool ownerSnapshotContainsPos = false;
                     bool ownerControllerLoaded = false;
@@ -71,7 +71,7 @@ public sealed partial class ArchimedesWaterNetworkManager
     {
         int clampedRadius = Math.Clamp(radius, 1, 128);
         var result = new List<BlockPos>();
-        HashSet<string> seen = new(StringComparer.Ordinal);
+        HashSet<long> seen = new();
 
         int minX = center.X - clampedRadius;
         int maxX = center.X + clampedRadius;
@@ -94,7 +94,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                         continue;
                     }
 
-                    string key = PosKey(pos);
+                    long key = ArchimedesPosKey.Pack(pos);
                     if (!seen.Add(key))
                     {
                         continue;

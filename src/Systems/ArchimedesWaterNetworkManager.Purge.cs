@@ -13,7 +13,7 @@ public sealed partial class ArchimedesWaterNetworkManager
     /// Removes Archimedes managed fluid at <paramref name="pos"/> with <see cref="SuppressRemovalNotification"/> applied for <paramref name="posKey"/>.
     /// </summary>
     /// <returns><c>true</c> if a managed Archimedes water fluid block was deleted.</returns>
-    private bool TryRemoveArchimedesManagedFluidAt(BlockPos pos, string posKey)
+    private bool TryRemoveArchimedesManagedFluidAt(BlockPos pos, long posKey)
     {
         Block block = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsArchimedesWaterBlock(block))
@@ -36,7 +36,7 @@ public sealed partial class ArchimedesWaterNetworkManager
 
     public int PurgeManagedWater()
     {
-        HashSet<string> anchorKeys = BuildAllArchimedesWaterAnchorKeys();
+        HashSet<long> anchorKeys = BuildAllArchimedesWaterAnchorKeys();
 
         foreach (WeakReference<BlockEntityWaterArchimedesScrew> pair in loadedControllers.Values)
         {
@@ -46,32 +46,18 @@ public sealed partial class ArchimedesWaterNetworkManager
             }
         }
 
-        HashSet<string> allWaterKeys = new(StringComparer.Ordinal);
-        int skippedInvalidKeys = 0;
-        List<string> invalidSamples = new();
-        foreach (string key in anchorKeys)
+        HashSet<long> allWaterKeys = new();
+        foreach (long key in anchorKeys)
         {
-            if (!TryParsePosKey(key, out BlockPos pos))
-            {
-                skippedInvalidKeys++;
-                AddInvalidPosKeySample(invalidSamples, key);
-                continue;
-            }
-
+            BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
             CollectManagedComponentKeysAroundAnchor(pos, allWaterKeys);
         }
 
         int removed = 0;
         List<BlockPos> removedPositions = new();
-        foreach (string key in allWaterKeys)
+        foreach (long key in allWaterKeys)
         {
-            if (!TryParsePosKey(key, out BlockPos pos))
-            {
-                skippedInvalidKeys++;
-                AddInvalidPosKeySample(invalidSamples, key);
-                continue;
-            }
-
+            BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
             if (TryRemoveArchimedesManagedFluidAt(pos, key))
             {
                 removedPositions.Add(pos);
@@ -87,8 +73,6 @@ public sealed partial class ArchimedesWaterNetworkManager
         sourceOwnerByPos.Clear();
         unownedCleanupCooldownUntilMsByKey.Clear();
         controllerOwnedById.Clear();
-
-        LogSkippedInvalidPosKeys("PurgeManagedWater", skippedInvalidKeys, invalidSamples);
 
         api.Logger.Notification(
             "{0} PurgeManagedWater deleted {1} Archimedes water blocks",
@@ -109,17 +93,9 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         int removed = 0;
-        int skippedInvalidKeys = 0;
-        List<string> invalidSamples = new();
-        foreach (string key in screwBlockKeys.ToArray())
+        foreach (long key in screwBlockKeys.ToArray())
         {
-            if (!TryParsePosKey(key, out BlockPos pos))
-            {
-                skippedInvalidKeys++;
-                AddInvalidPosKeySample(invalidSamples, key);
-                continue;
-            }
-
+            BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
             Block block = api.World.BlockAccessor.GetBlock(pos);
             if (block is not BlockWaterArchimedesScrew)
             {
@@ -129,8 +105,6 @@ public sealed partial class ArchimedesWaterNetworkManager
             api.World.BlockAccessor.SetBlock(0, pos);
             removed++;
         }
-
-        LogSkippedInvalidPosKeys("PurgeScrewsOnly", skippedInvalidKeys, invalidSamples);
 
         screwBlockKeys.Clear();
         controllerPosById.Clear();
@@ -191,7 +165,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                     for (int y = 0; y < mapHeight; y++)
                     {
                         BlockPos pos = new(x, y, z);
-                        string key = PosKey(pos);
+                        long key = ArchimedesPosKey.Pack(pos);
                         if (TryRemoveArchimedesManagedFluidAt(pos, key))
                         {
                             removedPositions.Add(pos.Copy());
@@ -221,7 +195,7 @@ public sealed partial class ArchimedesWaterNetworkManager
         return removed;
     }
 
-    private void CollectManagedComponentKeysAroundAnchor(BlockPos anchor, HashSet<string> allWaterKeys)
+    private void CollectManagedComponentKeysAroundAnchor(BlockPos anchor, HashSet<long> allWaterKeys)
     {
         TryCollectManagedComponent(anchor, allWaterKeys);
         foreach (BlockFacing face in BlockFacing.ALLFACES)
@@ -230,11 +204,11 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
     }
 
-    private HashSet<string> BuildManagedWaterAnchorKeys()
+    private HashSet<long> BuildManagedWaterAnchorKeys()
     {
-        HashSet<string> anchorKeys = new(StringComparer.Ordinal);
+        HashSet<long> anchorKeys = new();
 
-        foreach (string key in sourceOwnerByPos.Keys)
+        foreach (long key in sourceOwnerByPos.Keys)
         {
             anchorKeys.Add(key);
         }
@@ -243,16 +217,16 @@ public sealed partial class ArchimedesWaterNetworkManager
         {
             foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatPositions))
             {
-                anchorKeys.Add(PosKey(pos));
+                anchorKeys.Add(ArchimedesPosKey.Pack(pos));
             }
         }
 
-        foreach (string screwKey in screwBlockKeys)
+        foreach (long screwKey in screwBlockKeys)
         {
             anchorKeys.Add(screwKey);
         }
 
-        foreach (string controllerPosKey in controllerPosById.Values)
+        foreach (long controllerPosKey in controllerPosById.Values)
         {
             anchorKeys.Add(controllerPosKey);
         }
@@ -261,28 +235,28 @@ public sealed partial class ArchimedesWaterNetworkManager
         {
             if (wr.TryGetTarget(out BlockEntityWaterArchimedesScrew? controller))
             {
-                anchorKeys.Add(PosKey(controller.Pos));
+                anchorKeys.Add(ArchimedesPosKey.Pack(controller.Pos));
             }
         }
 
         return anchorKeys;
     }
 
-    private HashSet<string> BuildAllArchimedesWaterAnchorKeys()
+    private HashSet<long> BuildAllArchimedesWaterAnchorKeys()
     {
-        HashSet<string> anchorKeys = BuildManagedWaterAnchorKeys();
+        HashSet<long> anchorKeys = BuildManagedWaterAnchorKeys();
 
-        foreach (string key in screwBlockKeys)
+        foreach (long key in screwBlockKeys)
         {
             anchorKeys.Add(key);
         }
 
-        foreach (string key in controllerPosById.Values)
+        foreach (long key in controllerPosById.Values)
         {
             anchorKeys.Add(key);
         }
 
-        foreach (string key in sourceOwnerByPos.Keys)
+        foreach (long key in sourceOwnerByPos.Keys)
         {
             anchorKeys.Add(key);
         }
@@ -290,9 +264,9 @@ public sealed partial class ArchimedesWaterNetworkManager
         return anchorKeys;
     }
 
-    private void TryCollectManagedComponent(BlockPos pos, HashSet<string> allWaterKeys)
+    private void TryCollectManagedComponent(BlockPos pos, HashSet<long> allWaterKeys)
     {
-        string posKey = PosKey(pos);
+        long posKey = ArchimedesPosKey.Pack(pos);
         if (allWaterKeys.Contains(posKey))
         {
             return;
@@ -304,8 +278,8 @@ public sealed partial class ArchimedesWaterNetworkManager
             return;
         }
 
-        CollectConnectedManagedWater(pos, out Dictionary<string, BlockPos> connectedWater);
-        foreach (string key in connectedWater.Keys)
+        CollectConnectedManagedWater(pos, out Dictionary<long, BlockPos> connectedWater);
+        foreach (long key in connectedWater.Keys)
         {
             allWaterKeys.Add(key);
         }

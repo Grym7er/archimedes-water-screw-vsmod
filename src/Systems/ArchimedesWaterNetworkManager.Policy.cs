@@ -8,10 +8,10 @@ namespace ArchimedesScrew;
 
 public sealed partial class ArchimedesWaterNetworkManager
 {
-    private readonly Dictionary<string, ManagedSourceProvenance> sourceProvenanceByPos = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> lockedVanillaFamilyByPos = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, ManagedSourceProvenance> sourceProvenanceByPos = new();
+    private readonly Dictionary<long, string> lockedVanillaFamilyByPos = new();
     private readonly Queue<ConversionIntent> conversionIntentQueue = new();
-    private readonly HashSet<string> queuedIntentKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<long> queuedIntentKeys = new();
     private static readonly List<BlockPos> LockCaptureOffsets = BuildLockCaptureOffsets();
 
     public void EnqueueConversionIntent(
@@ -21,7 +21,7 @@ public sealed partial class ArchimedesWaterNetworkManager
         string reason,
         bool playerIntent = false)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         if (!queuedIntentKeys.Add(key))
         {
             return;
@@ -52,7 +52,7 @@ public sealed partial class ArchimedesWaterNetworkManager
         while (processed < budget && conversionIntentQueue.Count > 0)
         {
             ConversionIntent intent = conversionIntentQueue.Dequeue();
-            queuedIntentKeys.Remove(PosKey(intent.Pos));
+            queuedIntentKeys.Remove(ArchimedesPosKey.Pack(intent.Pos));
             TryClaimVanillaSourceWithPolicy(
                 intent.Pos,
                 intent.FamilyId,
@@ -69,12 +69,12 @@ public sealed partial class ArchimedesWaterNetworkManager
 
     public bool TryGetSourceProvenance(BlockPos pos, out ManagedSourceProvenance provenance)
     {
-        return sourceProvenanceByPos.TryGetValue(PosKey(pos), out provenance);
+        return sourceProvenanceByPos.TryGetValue(ArchimedesPosKey.Pack(pos), out provenance);
     }
 
     private void SetSourceProvenance(BlockPos pos, ManagedSourceProvenance provenance)
     {
-        sourceProvenanceByPos[PosKey(pos)] = provenance;
+        sourceProvenanceByPos[ArchimedesPosKey.Pack(pos)] = provenance;
     }
 
     private bool TryClaimVanillaSourceWithPolicy(
@@ -148,7 +148,7 @@ public sealed partial class ArchimedesWaterNetworkManager
 
     public bool IsVanillaLocked(BlockPos pos, string familyId)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         return lockedVanillaFamilyByPos.TryGetValue(key, out string? lockedFamily) &&
                string.Equals(lockedFamily, familyId, StringComparison.Ordinal);
     }
@@ -180,7 +180,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                 continue;
             }
 
-            lockedVanillaFamilyByPos[PosKey(candidate)] = familyId;
+            lockedVanillaFamilyByPos[ArchimedesPosKey.Pack(candidate)] = familyId;
             ArchimedesPerf.AddCount("water.vanillaLocks.captured");
         }
     }
@@ -207,9 +207,9 @@ public sealed partial class ArchimedesWaterNetworkManager
         return offsets;
     }
 
-    private string? ResolveDomainLeaderControllerId(BlockPos sourcePos, string familyId, IEnumerable<string> connectedWaterKeys)
+    private string? ResolveDomainLeaderControllerId(BlockPos sourcePos, string familyId, IEnumerable<long> connectedWaterKeys)
     {
-        HashSet<string> connected = new(connectedWaterKeys, StringComparer.Ordinal);
+        HashSet<long> connected = new(connectedWaterKeys);
         List<ArchimedesOutletState> candidates = new();
         foreach (ArchimedesOutletState seed in GetActiveSeedStatesCached())
         {
@@ -218,7 +218,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                 continue;
             }
 
-            if (!connected.Contains(PosKey(seed.SeedPos)))
+            if (!connected.Contains(ArchimedesPosKey.Pack(seed.SeedPos)))
             {
                 continue;
             }

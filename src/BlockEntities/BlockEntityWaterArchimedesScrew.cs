@@ -28,10 +28,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private const int LocalSourceCooldownMs = 2500;
     private const int CooldownPruneIntervalMs = 5000;
 
-    private readonly Dictionary<string, BlockPos> ownedPositions = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, BlockPos> relayOwnedPositions = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> sourceCooldownUntilMsByKey = new(StringComparer.Ordinal);
-    private static readonly HashSet<string> EmptyKeySet = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, BlockPos> ownedPositions = new();
+    private readonly Dictionary<long, BlockPos> relayOwnedPositions = new();
+    private readonly Dictionary<long, long> sourceCooldownUntilMsByKey = new();
+    private static readonly HashSet<long> EmptyKeySet = new();
 
     private ArchimedesWaterNetworkManager? waterManager;
     private ArchimedesScrewConfig.WaterConfig? waterConfig;
@@ -273,7 +273,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     public void NotifyManagedWaterRemoved(BlockPos pos)
     {
-        string key = ArchimedesWaterNetworkManager.PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         ownedPositions.Remove(key);
         relayOwnedPositions.Remove(key);
         MarkDirty();
@@ -282,7 +282,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     internal void TrackAssignedSourceFromManager(BlockPos pos, string reason)
     {
-        string key = ArchimedesWaterNetworkManager.PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         if (ownedPositions.ContainsKey(key))
         {
             return;
@@ -295,7 +295,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     internal bool IsTrackingSource(BlockPos pos)
     {
-        return ownedPositions.ContainsKey(ArchimedesWaterNetworkManager.PosKey(pos));
+        return ownedPositions.ContainsKey(ArchimedesPosKey.Pack(pos));
     }
 
     public void ClearOwnedStateAfterPurge()
@@ -320,11 +320,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        HashSet<string> releaseKeys = new(StringComparer.Ordinal);
+        HashSet<long> releaseKeys = new();
         List<BlockPos> releaseList = new();
         foreach (BlockPos ownedPos in ownedPositions.Values)
         {
-            if (releaseKeys.Add(ArchimedesWaterNetworkManager.PosKey(ownedPos)))
+            if (releaseKeys.Add(ArchimedesPosKey.Pack(ownedPos)))
             {
                 releaseList.Add(ownedPos.Copy());
             }
@@ -332,7 +332,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         foreach (BlockPos ownedPos in waterManager.GetOwnedSourcePositionsForController(ControllerId))
         {
-            if (releaseKeys.Add(ArchimedesWaterNetworkManager.PosKey(ownedPos)))
+            if (releaseKeys.Add(ArchimedesPosKey.Pack(ownedPos)))
             {
                 releaseList.Add(ownedPos.Copy());
             }
@@ -349,7 +349,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int count = releaseList.Count;
         foreach (BlockPos ownedPos in releaseList)
         {
-            string key = ArchimedesWaterNetworkManager.PosKey(ownedPos);
+            long key = ArchimedesPosKey.Pack(ownedPos);
             NoteLocalSourceCooldown(key);
             waterManager.MarkDrainQuarantine(ownedPos);
             waterManager.ReleaseOwnedSourceForController(ControllerId, ownedPos);
@@ -393,7 +393,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             foreach (BlockPos pos in SafeDecodePositionArray(ownedBytes, OwnedPositionsKey))
             {
-                ownedPositions[ArchimedesWaterNetworkManager.PosKey(pos)] = pos;
+                ownedPositions[ArchimedesPosKey.Pack(pos)] = pos;
             }
         }
 
@@ -403,7 +403,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             foreach (BlockPos pos in SafeDecodePositionArray(relayBytes, RelayPositionsKey))
             {
-                relayOwnedPositions[ArchimedesWaterNetworkManager.PosKey(pos)] = pos;
+                relayOwnedPositions[ArchimedesPosKey.Pack(pos)] = pos;
             }
         }
 
@@ -482,7 +482,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         BlockPos seedPos = evaluation.SeedPos.Copy();
         string familyId = evaluation.FamilyId;
-        string seedKey = ArchimedesWaterNetworkManager.PosKey(seedPos);
+        string seedKey = ArchimedesPosKey.ToDebugString(ArchimedesPosKey.Pack(seedPos));
         if (lastLoggedSeedKey != seedKey)
         {
             lastLoggedSeedKey = seedKey;
@@ -525,8 +525,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        HashSet<string> connectedWaterKeys = connectedResult.VisitedKeys;
-        Dictionary<string, BlockPos> connectedWater = connectedResult.PositionsByKey;
+        HashSet<long> connectedWaterKeys = connectedResult.VisitedKeys;
+        Dictionary<long, BlockPos> connectedWater = connectedResult.PositionsByKey;
         ReconcileRelayOwnedPositions();
         int relayCap = ComputeEffectiveRelayCap(evaluation.CurrentPower);
         int relayWorkBudget = Math.Max(1, waterConfig.MaxRelayPromotionsPerTick);
@@ -587,8 +587,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private (int RelayCreated, int RelayTrimmed) RunRelayMaintenance(
         BlockPos seedPos,
         string familyId,
-        HashSet<string> connectedWaterKeys,
-        Dictionary<string, BlockPos> connectedWater,
+        HashSet<long> connectedWaterKeys,
+        Dictionary<long, BlockPos> connectedWater,
         int relayCap,
         int relayWorkBudget,
         int fastMs,
@@ -678,7 +678,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return new ControllerEvaluation(true, assemblyStatus.IsPowered, currentPower, string.Empty, familyId, seedPos);
     }
 
-    private List<ArchimedesOutletState> ResolveSupportingSeeds(BlockPos seedPos, HashSet<string> connectedKeySet)
+    private List<ArchimedesOutletState> ResolveSupportingSeeds(BlockPos seedPos, HashSet<long> connectedKeySet)
     {
         List<ArchimedesOutletState> supporting = new();
         HashSet<string> seenControllerIds = new(StringComparer.Ordinal);
@@ -692,7 +692,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
             if (activeSeed.ControllerId == ControllerId ||
                 activeSeed.SeedPos.Equals(seedPos) ||
-                connectedKeySet.Contains(ArchimedesWaterNetworkManager.PosKey(activeSeed.SeedPos)))
+                connectedKeySet.Contains(ArchimedesPosKey.Pack(activeSeed.SeedPos)))
             {
                 supporting.Add(new ArchimedesOutletState(activeSeed.ControllerId, activeSeed.SeedPos.Copy(), activeSeed.FamilyId));
             }
@@ -751,7 +751,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             sourcePos,
             sourceFacing
         );
-        ownedPositions[ArchimedesWaterNetworkManager.PosKey(seedPos)] = seedPos.Copy();
+        ownedPositions[ArchimedesPosKey.Pack(seedPos)] = seedPos.Copy();
         return changed;
     }
 
@@ -875,8 +875,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private int CreateRelaySources(
         BlockPos seedPos,
         string familyId,
-        HashSet<string> connectedWaterKeys,
-        Dictionary<string, BlockPos> connectedWater,
+        HashSet<long> connectedWaterKeys,
+        Dictionary<long, BlockPos> connectedWater,
         int relayCap,
         int perTickBudget)
     {
@@ -886,7 +886,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return 0;
         }
 
-        Dictionary<string, int> distanceByKey = BuildDistanceMap(seedPos, connectedWaterKeys);
+        Dictionary<long, int> distanceByKey = BuildDistanceMap(seedPos, connectedWaterKeys);
         int candidatesExamined = 0;
         int rejectedCooldown = 0;
         int rejectedOtherOwner = 0;
@@ -896,7 +896,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int budget = Math.Max(1, perTickBudget);
         int maxCreateAllowed = Math.Min(budget, relayCap - relayOwnedPositions.Count);
         int randomSeed = BuildRelayOrderingSeed();
-        foreach ((string key, int distance) in OrderRelayPromotionCandidates(distanceByKey, randomSeed))
+        foreach ((long key, int distance) in OrderRelayPromotionCandidates(distanceByKey, randomSeed))
         {
             if (created >= maxCreateAllowed)
             {
@@ -989,7 +989,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             .ToList();
         foreach (BlockPos pos in ordered)
         {
-            string key = ArchimedesWaterNetworkManager.PosKey(pos);
+            long key = ArchimedesPosKey.Pack(pos);
             relayOwnedPositions.Remove(key);
             ownedPositions.Remove(key);
             NoteLocalSourceCooldown(key);
@@ -1047,10 +1047,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ScheduleNextWaterTick(schedule, fastMs, idleMs);
     }
 
-    private Dictionary<string, int> BuildDistanceMap(BlockPos seedPos, HashSet<string> connectedWaterKeys)
+    private Dictionary<long, int> BuildDistanceMap(BlockPos seedPos, HashSet<long> connectedWaterKeys)
     {
-        Dictionary<string, int> distanceByKey = new(StringComparer.Ordinal);
-        string seedKey = ArchimedesWaterNetworkManager.PosKey(seedPos);
+        Dictionary<long, int> distanceByKey = new();
+        long seedKey = ArchimedesPosKey.Pack(seedPos);
         if (!connectedWaterKeys.Contains(seedKey))
         {
             return distanceByKey;
@@ -1062,12 +1062,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         while (queue.Count > 0)
         {
             BlockPos current = queue.Dequeue();
-            string currentKey = ArchimedesWaterNetworkManager.PosKey(current);
+            long currentKey = ArchimedesPosKey.Pack(current);
             int currentDistance = distanceByKey[currentKey];
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
                 BlockPos next = current.AddCopy(face);
-                string nextKey = ArchimedesWaterNetworkManager.PosKey(next);
+                long nextKey = ArchimedesPosKey.Pack(next);
                 if (!connectedWaterKeys.Contains(nextKey) || distanceByKey.ContainsKey(nextKey))
                 {
                     continue;
@@ -1086,13 +1086,13 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return distanceByKey;
     }
 
-    private IEnumerable<KeyValuePair<string, int>> OrderRelayPromotionCandidates(
-        Dictionary<string, int> distanceByKey,
+    private IEnumerable<KeyValuePair<long, int>> OrderRelayPromotionCandidates(
+        Dictionary<long, int> distanceByKey,
         int randomSeed)
     {
         if (IsRandomWithinDistanceBucketMode())
         {
-            foreach (KeyValuePair<string, int> candidate in OrderRelayPromotionCandidatesRandomWithinDistanceBucket(distanceByKey, randomSeed))
+            foreach (KeyValuePair<long, int> candidate in OrderRelayPromotionCandidatesRandomWithinDistanceBucket(distanceByKey, randomSeed))
             {
                 yield return candidate;
             }
@@ -1100,30 +1100,30 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             yield break;
         }
 
-        foreach (KeyValuePair<string, int> candidate in distanceByKey
+        foreach (KeyValuePair<long, int> candidate in distanceByKey
                      .OrderBy(p => p.Value)
-                     .ThenByDescending(p => TryParseYFromPosKey(p.Key))
-                     .ThenBy(p => p.Key, StringComparer.Ordinal))
+                     .ThenByDescending(p => ArchimedesPosKey.ExtractY(p.Key))
+                     .ThenBy(p => p.Key))
         {
             yield return candidate;
         }
     }
 
-    private IEnumerable<KeyValuePair<string, int>> OrderRelayPromotionCandidatesRandomWithinDistanceBucket(
-        Dictionary<string, int> distanceByKey,
+    private IEnumerable<KeyValuePair<long, int>> OrderRelayPromotionCandidatesRandomWithinDistanceBucket(
+        Dictionary<long, int> distanceByKey,
         int randomSeed)
     {
         Random random = new(randomSeed);
-        foreach (IGrouping<int, KeyValuePair<string, int>> bucket in distanceByKey.GroupBy(p => p.Value).OrderBy(g => g.Key))
+        foreach (IGrouping<int, KeyValuePair<long, int>> bucket in distanceByKey.GroupBy(p => p.Value).OrderBy(g => g.Key))
         {
-            List<KeyValuePair<string, int>> shuffled = bucket.ToList();
+            List<KeyValuePair<long, int>> shuffled = bucket.ToList();
             for (int i = shuffled.Count - 1; i > 0; i--)
             {
                 int j = random.Next(i + 1);
                 (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
             }
 
-            foreach (KeyValuePair<string, int> candidate in shuffled)
+            foreach (KeyValuePair<long, int> candidate in shuffled)
             {
                 yield return candidate;
             }
@@ -1185,12 +1185,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return releaseCandidates;
     }
 
-    private void NoteLocalSourceCooldown(string key)
+    private void NoteLocalSourceCooldown(long key)
     {
         sourceCooldownUntilMsByKey[key] = Environment.TickCount64 + LocalSourceCooldownMs;
     }
 
-    private bool IsLocalSourceCooldownActive(string key)
+    private bool IsLocalSourceCooldownActive(long key)
     {
         if (!sourceCooldownUntilMsByKey.TryGetValue(key, out long until))
         {
@@ -1208,7 +1208,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        foreach (string key in sourceCooldownUntilMsByKey.Keys.ToList())
+        foreach (long key in sourceCooldownUntilMsByKey.Keys.ToList())
         {
             if (sourceCooldownUntilMsByKey[key] <= now)
             {
@@ -1217,16 +1217,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         nextCooldownPruneAtMs = now + CooldownPruneIntervalMs;
-    }
-
-    private static int TryParseYFromPosKey(string key)
-    {
-        if (!ArchimedesWaterNetworkManager.TryParsePosKey(key, out BlockPos pos))
-        {
-            return int.MinValue;
-        }
-
-        return pos.Y;
     }
 
     private bool IsRelayCreationDue()
@@ -1248,21 +1238,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         int removedInvalidKeys = 0;
         List<string> invalidSamples = new();
-        foreach (string key in relayOwnedPositions.Keys.ToList())
+        foreach (long key in relayOwnedPositions.Keys.ToList())
         {
-            if (!ArchimedesWaterNetworkManager.TryParsePosKey(key, out BlockPos pos))
-            {
-                relayOwnedPositions.Remove(key);
-                removedInvalidKeys++;
-                if (invalidSamples.Count < 3)
-                {
-                    const int maxLen = 80;
-                    invalidSamples.Add(key.Length <= maxLen ? key : key.Substring(0, maxLen) + "...");
-                }
-
-                continue;
-            }
-
             bool stillOwned = ownedPositions.ContainsKey(key);
             // Keep relay markers stable across temporary source/flow transitions,
             // especially around save/load when fluid state can lag ownership restore.
@@ -1297,7 +1274,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return behavior?.Network == null ? 0f : Math.Abs(behavior.Network.Speed);
     }
 
-    private int DrainUnsupportedSources(IReadOnlyCollection<ArchimedesOutletState> referenceSeeds, HashSet<string> supportedKeySet, string reason, bool ignoreGrace = false)
+    private int DrainUnsupportedSources(IReadOnlyCollection<ArchimedesOutletState> referenceSeeds, HashSet<long> supportedKeySet, string reason, bool ignoreGrace = false)
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("controller.drainUnsupported");
         if (Api == null || waterManager == null || waterConfig == null)
@@ -1314,7 +1291,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         List<BlockPos> toRelease = new();
         foreach (BlockPos pos in ownedPositions.Values)
         {
-            string key = ArchimedesWaterNetworkManager.PosKey(pos);
+            long key = ArchimedesPosKey.Pack(pos);
             if (!supportedKeySet.Contains(key))
             {
                 toRelease.Add(pos);
@@ -1363,7 +1340,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         for (int i = 0; i < releaseCount; i++)
         {
             BlockPos pos = releaseCandidates[i];
-            string key = ArchimedesWaterNetworkManager.PosKey(pos);
+            long key = ArchimedesPosKey.Pack(pos);
             ownedPositions.Remove(key);
             relayOwnedPositions.Remove(key);
             NoteLocalSourceCooldown(key);
@@ -1462,7 +1439,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int added = 0;
         foreach (BlockPos pos in waterManager.GetOwnedSourcePositionsForController(ControllerId))
         {
-            string key = ArchimedesWaterNetworkManager.PosKey(pos);
+            long key = ArchimedesPosKey.Pack(pos);
             if (ownedPositions.ContainsKey(key))
             {
                 continue;

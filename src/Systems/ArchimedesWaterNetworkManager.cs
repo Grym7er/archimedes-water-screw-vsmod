@@ -25,21 +25,21 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private readonly ICoreServerAPI api;
     private readonly ArchimedesScrewConfig config;
 
-    private readonly Dictionary<string, string> sourceOwnerByPos = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> managedAdoptionCooldownUntilMsByKey = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> unownedCleanupCooldownUntilMsByKey = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> drainQuarantineUntilMsByKey = new(StringComparer.Ordinal);
-    private readonly HashSet<string> screwBlockKeys = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> controllerPosById = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, string> sourceOwnerByPos = new();
+    private readonly Dictionary<long, long> managedAdoptionCooldownUntilMsByKey = new();
+    private readonly Dictionary<long, long> unownedCleanupCooldownUntilMsByKey = new();
+    private readonly Dictionary<long, long> drainQuarantineUntilMsByKey = new();
+    private readonly HashSet<long> screwBlockKeys = new();
+    private readonly Dictionary<string, long> controllerPosById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int[]> controllerOwnedById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> loadedControllers = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, byte> suppressedRemovalNotifications = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<long, byte> suppressedRemovalNotifications = new();
     private readonly Dictionary<string, Block> managedBlockCache = new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> centralWaterTickControllers = new(StringComparer.Ordinal);
     private readonly List<string> centralWaterTickOrder = new();
     private readonly HashSet<string> centralWaterTickSet = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, ConnectedManagedComponentCacheEntry> connectedManagedComponentCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, ConnectedManagedComponentCacheEntry> connectedManagedComponentCache = new();
     private readonly List<ArchimedesOutletState> activeSeedStatesCache = new();
     private int centralWaterTickCursor;
     private int centralWaterTickCountDownToCompaction = 20;
@@ -58,6 +58,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     {
         this.api = api;
         this.config = config;
+        ArchimedesPosKey.InitializeForWorld(api.WorldManager.MapSizeX, api.WorldManager.MapSizeY, api.WorldManager.MapSizeZ);
     }
 
     public void Dispose()
@@ -143,32 +144,18 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public int ReactivateManagedFluidsFromTrackedAnchors()
     {
-        HashSet<string> anchors = BuildManagedWaterAnchorKeys();
-        HashSet<string> allWaterKeys = new(StringComparer.Ordinal);
-        int skippedInvalidKeys = 0;
-        List<string> invalidSamples = new();
-        foreach (string key in anchors)
+        HashSet<long> anchors = BuildManagedWaterAnchorKeys();
+        HashSet<long> allWaterKeys = new();
+        foreach (long key in anchors)
         {
-            if (!TryParsePosKey(key, out BlockPos pos))
-            {
-                skippedInvalidKeys++;
-                AddInvalidPosKeySample(invalidSamples, key);
-                continue;
-            }
-
+            BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
             CollectManagedComponentKeysAroundAnchor(pos, allWaterKeys);
         }
 
         int touched = 0;
-        foreach (string key in allWaterKeys)
+        foreach (long key in allWaterKeys)
         {
-            if (!TryParsePosKey(key, out BlockPos pos))
-            {
-                skippedInvalidKeys++;
-                AddInvalidPosKeySample(invalidSamples, key);
-                continue;
-            }
-
+            BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
             Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
             if (!IsArchimedesWaterBlock(fluid))
             {
@@ -178,8 +165,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             TriggerLiquidUpdates(pos, fluid);
             touched++;
         }
-
-        LogSkippedInvalidPosKeys("ReactivateManagedFluidsFromTrackedAnchors", skippedInvalidKeys, invalidSamples);
 
         api.Logger.Notification(
             "{0} Post-load managed fluid reactivation pass touched={1} (anchors={2})",
@@ -310,9 +295,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         {
             foreach (string key in screwKeys)
             {
-                if (TryParsePosKey(key, out _))
+                if (ArchimedesPosKey.TryPackFromString(key, out long packed))
                 {
-                    screwBlockKeys.Add(key);
+                    screwBlockKeys.Add(packed);
                 }
                 else
                 {
@@ -329,9 +314,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         {
             foreach ((string id, string posKey) in controllerPositions)
             {
-                if (TryParsePosKey(posKey, out _))
+                if (ArchimedesPosKey.TryPackFromString(posKey, out long packed))
                 {
-                    controllerPosById[id] = posKey;
+                    controllerPosById[id] = packed;
                 }
                 else
                 {
@@ -388,7 +373,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             controllerOwnedById[controllerId] = flatPositions;
             foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatPositions))
             {
-                string key = PosKey(pos);
+                long key = ArchimedesPosKey.Pack(pos);
                 if (!sourceOwnerByPos.TryGetValue(key, out string? existing))
                 {
                     sourceOwnerByPos[key] = controllerId;
@@ -399,7 +384,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 if (conflictSamples.Count < 5 &&
                     !string.Equals(existing, controllerId, StringComparison.Ordinal))
                 {
-                    conflictSamples.Add((controllerId, key, existing));
+                    conflictSamples.Add((controllerId, ArchimedesPosKey.ToDebugString(key), existing));
                 }
 
                 // Deterministic conflict resolution for old saves that had multi-owner snapshots.
@@ -415,19 +400,19 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         {
             foreach ((string key, int rawValue) in provenanceRaw)
             {
-                if (!TryParsePosKey(key, out _))
+                if (!ArchimedesPosKey.TryPackFromString(key, out long packed))
                 {
                     continue;
                 }
 
                 if (Enum.IsDefined(typeof(ManagedSourceProvenance), rawValue))
                 {
-                    sourceProvenanceByPos[key] = (ManagedSourceProvenance)rawValue;
+                    sourceProvenanceByPos[packed] = (ManagedSourceProvenance)rawValue;
                 }
             }
         }
 
-        foreach ((string key, _) in sourceOwnerByPos)
+        foreach ((long key, _) in sourceOwnerByPos)
         {
             if (!sourceProvenanceByPos.ContainsKey(key))
             {
@@ -440,14 +425,14 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         {
             foreach ((string key, string familyId) in lockedVanillaRaw)
             {
-                if (!TryParsePosKey(key, out _))
+                if (!ArchimedesPosKey.TryPackFromString(key, out long packed))
                 {
                     continue;
                 }
 
                 if (ArchimedesWaterFamilies.All.Any(f => string.Equals(f.Id, familyId, StringComparison.Ordinal)))
                 {
-                    lockedVanillaFamilyByPos[key] = familyId;
+                    lockedVanillaFamilyByPos[packed] = familyId;
                 }
             }
         }
@@ -498,14 +483,23 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public void Save()
     {
-        api.WorldManager.SaveGame.StoreData(SaveKeyScrewBlocks, SerializerUtil.Serialize(screwBlockKeys.ToArray()));
-        api.WorldManager.SaveGame.StoreData(SaveKeyControllerPositions, SerializerUtil.Serialize(controllerPosById));
+        api.WorldManager.SaveGame.StoreData(
+            SaveKeyScrewBlocks,
+            SerializerUtil.Serialize(screwBlockKeys.Select(ArchimedesPosKey.ToDebugString).ToArray())
+        );
+        api.WorldManager.SaveGame.StoreData(
+            SaveKeyControllerPositions,
+            SerializerUtil.Serialize(controllerPosById.ToDictionary(kvp => kvp.Key, kvp => ArchimedesPosKey.ToDebugString(kvp.Value), StringComparer.Ordinal))
+        );
         api.WorldManager.SaveGame.StoreData(SaveKeyControllerOwned, SerializerUtil.Serialize(controllerOwnedById));
         api.WorldManager.SaveGame.StoreData(
             SaveKeySourceProvenance,
-            SerializerUtil.Serialize(sourceProvenanceByPos.ToDictionary(kvp => kvp.Key, kvp => (int)kvp.Value, StringComparer.Ordinal))
+            SerializerUtil.Serialize(sourceProvenanceByPos.ToDictionary(kvp => ArchimedesPosKey.ToDebugString(kvp.Key), kvp => (int)kvp.Value, StringComparer.Ordinal))
         );
-        api.WorldManager.SaveGame.StoreData(SaveKeyLockedVanilla, SerializerUtil.Serialize(lockedVanillaFamilyByPos));
+        api.WorldManager.SaveGame.StoreData(
+            SaveKeyLockedVanilla,
+            SerializerUtil.Serialize(lockedVanillaFamilyByPos.ToDictionary(kvp => ArchimedesPosKey.ToDebugString(kvp.Key), kvp => kvp.Value, StringComparer.Ordinal))
+        );
         api.Logger.Notification(
             "{0} Saved water manager state: screws={1}, controllerPosEntries={2}, controllerOwnedSnapshots={3}, trackedSources={4}, trackedProvenance={5}, lockedVanilla={6}, loadedControllerWeakRefs={7}",
             ArchimedesScrewModSystem.LogPrefix,
@@ -522,7 +516,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     public void RegisterLoadedController(BlockEntityWaterArchimedesScrew controller)
     {
         loadedControllers[controller.ControllerId] = new WeakReference<BlockEntityWaterArchimedesScrew>(controller);
-        controllerPosById[controller.ControllerId] = PosKey(controller.Pos);
+        controllerPosById[controller.ControllerId] = ArchimedesPosKey.Pack(controller.Pos);
     }
 
     public void UnregisterLoadedController(string controllerId)
@@ -532,12 +526,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public void RegisterScrewBlock(BlockPos pos)
     {
-        screwBlockKeys.Add(PosKey(pos));
+        screwBlockKeys.Add(ArchimedesPosKey.Pack(pos));
     }
 
     public void UnregisterScrewBlock(BlockPos pos)
     {
-        screwBlockKeys.Remove(PosKey(pos));
+        screwBlockKeys.Remove(ArchimedesPosKey.Pack(pos));
     }
 
     public bool IsArchimedesWaterBlock(Block block)
@@ -561,7 +555,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public bool TryGetSourceOwner(BlockPos pos, out string ownerId)
     {
-        return sourceOwnerByPos.TryGetValue(PosKey(pos), out ownerId!);
+        return sourceOwnerByPos.TryGetValue(ArchimedesPosKey.Pack(pos), out ownerId!);
     }
 
     public bool IsControllerLoaded(string controllerId)
@@ -572,7 +566,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public void MarkDrainQuarantine(BlockPos pos, int durationMs = DrainQuarantineMs)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         long until = Environment.TickCount64 + Math.Max(0, durationMs);
         if (drainQuarantineUntilMsByKey.TryGetValue(key, out long existingUntil) && existingUntil >= until)
         {
@@ -584,10 +578,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public bool IsDrainQuarantined(BlockPos pos)
     {
-        return IsDrainQuarantined(PosKey(pos));
+        return IsDrainQuarantined(ArchimedesPosKey.Pack(pos));
     }
 
-    public bool IsDrainQuarantined(string key)
+    public bool IsDrainQuarantined(long key)
     {
         long now = Environment.TickCount64;
         PruneExpiredDrainQuarantine(now);
@@ -601,7 +595,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return;
         }
 
-        foreach (string key in drainQuarantineUntilMsByKey.Keys.ToList())
+        foreach (long key in drainQuarantineUntilMsByKey.Keys.ToList())
         {
             if (drainQuarantineUntilMsByKey[key] <= nowMs)
             {
@@ -695,8 +689,8 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     public ConnectedManagedWaterResult CollectConnectedManagedWaterDetailed(BlockPos startPos)
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.collectConnectedManaged");
-        Dictionary<string, BlockPos> positionsByKey = new(StringComparer.Ordinal);
-        HashSet<string> visited = new(StringComparer.Ordinal);
+        Dictionary<long, BlockPos> positionsByKey = new();
+        HashSet<long> visited = new();
 
         Block startFluid = api.World.BlockAccessor.GetBlock(startPos, BlockLayersAccess.Fluid);
         if (!IsArchimedesWaterBlock(startFluid))
@@ -706,7 +700,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         Queue<BlockPos> queue = new();
         queue.Enqueue(startPos.Copy());
-        visited.Add(PosKey(startPos));
+        visited.Add(ArchimedesPosKey.Pack(startPos));
         int visitedManagedCount = 0;
         bool isTruncated = false;
 
@@ -725,14 +719,14 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
 
             BlockPos current = queue.Dequeue();
-            string key = PosKey(current);
+            long key = ArchimedesPosKey.Pack(current);
             positionsByKey[key] = current.Copy();
             visitedManagedCount++;
 
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
                 BlockPos next = current.AddCopy(face);
-                string nextKey = PosKey(next);
+                long nextKey = ArchimedesPosKey.Pack(next);
                 if (visited.Contains(nextKey))
                 {
                     continue;
@@ -758,7 +752,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return new ConnectedManagedWaterResult(visited, positionsByKey, isTruncated, visitedManagedCount);
     }
 
-    public HashSet<string> CollectConnectedManagedWater(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
+    public HashSet<long> CollectConnectedManagedWater(BlockPos startPos, out Dictionary<long, BlockPos> positionsByKey)
     {
         ConnectedManagedWaterResult result = CollectConnectedManagedWaterDetailed(startPos);
         positionsByKey = result.PositionsByKey;
@@ -777,7 +771,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return CollectConnectedManagedWaterDetailed(startPos);
         }
 
-        string startKey = PosKey(startPos);
+        long startKey = ArchimedesPosKey.Pack(startPos);
         if (connectedManagedComponentCache.TryGetValue(startKey, out ConnectedManagedComponentCacheEntry? cached) &&
             cached.Generation == connectedManagedComponentCacheGeneration)
         {
@@ -799,7 +793,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             result.VisitedManagedCount
         );
         // Component-level fanout: any position in this connected region should hit cache this tick.
-        foreach (string key in result.VisitedKeys)
+        foreach (long key in result.VisitedKeys)
         {
             connectedManagedComponentCache[key] = entry;
         }
@@ -808,18 +802,18 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return result;
     }
 
-    public HashSet<string> CollectConnectedManagedWaterCached(BlockPos startPos, out Dictionary<string, BlockPos> positionsByKey)
+    public HashSet<long> CollectConnectedManagedWaterCached(BlockPos startPos, out Dictionary<long, BlockPos> positionsByKey)
     {
         ConnectedManagedWaterResult result = CollectConnectedManagedWaterCachedDetailed(startPos);
         positionsByKey = result.PositionsByKey;
         return result.VisitedKeys;
     }
 
-    public HashSet<string> CollectConnectedArchimedesSources(BlockPos startPos, out Dictionary<string, BlockPos> sourcePositionsByKey)
+    public HashSet<long> CollectConnectedArchimedesSources(BlockPos startPos, out Dictionary<long, BlockPos> sourcePositionsByKey)
     {
-        sourcePositionsByKey = new Dictionary<string, BlockPos>(StringComparer.Ordinal);
-        HashSet<string> connectedWater = CollectConnectedManagedWater(startPos, out Dictionary<string, BlockPos> waterPositions);
-        foreach ((string key, BlockPos pos) in waterPositions)
+        sourcePositionsByKey = new Dictionary<long, BlockPos>();
+        HashSet<long> connectedWater = CollectConnectedManagedWater(startPos, out Dictionary<long, BlockPos> waterPositions);
+        foreach ((long key, BlockPos pos) in waterPositions)
         {
             Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
             if (!IsArchimedesSourceBlock(fluidBlock))
@@ -830,7 +824,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             sourcePositionsByKey[key] = pos.Copy();
         }
 
-        return new HashSet<string>(sourcePositionsByKey.Keys, StringComparer.Ordinal);
+        return new HashSet<long>(sourcePositionsByKey.Keys);
     }
 
     public bool EnsureSourceOwned(
@@ -840,7 +834,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         BlockPos? sourcePos = null,
         BlockFacing? sourceFacing = null)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         if (IsDrainQuarantined(key))
         {
             return false;
@@ -924,14 +918,14 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public IReadOnlyList<BlockPos> GetOwnedSourcePositionsForController(string controllerId)
     {
-        HashSet<string> keys = new(StringComparer.Ordinal);
+        HashSet<long> keys = new();
         List<BlockPos> result = new();
 
         if (controllerOwnedById.TryGetValue(controllerId, out int[]? encoded))
         {
             foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(encoded))
             {
-                string key = PosKey(pos);
+                long key = ArchimedesPosKey.Pack(pos);
                 if (keys.Add(key))
                 {
                     result.Add(pos.Copy());
@@ -939,26 +933,15 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
         }
 
-        int skippedInvalidKeys = 0;
-        List<string> invalidSamples = new();
-        foreach ((string key, string ownerId) in sourceOwnerByPos)
+        foreach ((long key, string ownerId) in sourceOwnerByPos)
         {
             if (!string.Equals(ownerId, controllerId, StringComparison.Ordinal) || !keys.Add(key))
             {
                 continue;
             }
-
-            if (!TryParsePosKey(key, out BlockPos pos))
-            {
-                skippedInvalidKeys++;
-                AddInvalidPosKeySample(invalidSamples, key);
-                continue;
-            }
-
+            BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
             result.Add(pos.Copy());
         }
-
-        LogSkippedInvalidPosKeys("GetOwnedSourcePositionsForController", skippedInvalidKeys, invalidSamples);
 
         return result;
     }
@@ -971,7 +954,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return false;
         }
 
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         if (sourceOwnerByPos.TryGetValue(key, out _))
         {
             return false;
@@ -984,7 +967,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public void ReleaseSourceOwner(string ownerId, BlockPos pos)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         if (!sourceOwnerByPos.TryGetValue(key, out string? owner))
         {
             RemoveOrphanedManagedSource(pos, key);
@@ -1028,7 +1011,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         int removed = 0;
-        HashSet<string> seenKeys = new(StringComparer.Ordinal);
+        HashSet<long> seenKeys = new();
         foreach (BlockPos anchor in anchors)
         {
             if (removed >= budget)
@@ -1036,8 +1019,8 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 break;
             }
 
-            CollectConnectedManagedWater(anchor, out Dictionary<string, BlockPos> connectedWater);
-            foreach ((string key, BlockPos pos) in connectedWater)
+            CollectConnectedManagedWater(anchor, out Dictionary<long, BlockPos> connectedWater);
+            foreach ((long key, BlockPos pos) in connectedWater)
             {
                 if (removed >= budget || !seenKeys.Add(key))
                 {
@@ -1106,8 +1089,8 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         int converted = 0;
-        HashSet<string> convertedKeys = new(StringComparer.Ordinal);
-        Dictionary<string, BlockPos> connectedWater = connectedResult.PositionsByKey;
+        HashSet<long> convertedKeys = new();
+        Dictionary<long, BlockPos> connectedWater = connectedResult.PositionsByKey;
         foreach (BlockPos pos in connectedWater.Values)
         {
             Block currentFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
@@ -1119,7 +1102,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             foreach (BlockFacing face in BlockFacing.ALLFACES)
             {
                 BlockPos adjacentPos = pos.AddCopy(face);
-                string adjacentKey = PosKey(adjacentPos);
+                long adjacentKey = ArchimedesPosKey.Pack(adjacentPos);
                 if (!convertedKeys.Add(adjacentKey))
                 {
                     continue;
@@ -1192,7 +1175,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         IBlockAccessor ba = api.World.BlockAccessor;
-        HashSet<string> visited = new(StringComparer.Ordinal);
+        HashSet<long> visited = new();
         Queue<(BlockPos Pos, int VanillaDepth)> queue = new();
         int haloDepth = Math.Max(0, config.Water.VanillaClaimHaloDepth);
 
@@ -1203,7 +1186,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 return;
             }
 
-            string key = PosKey(p);
+            long key = ArchimedesPosKey.Pack(p);
             if (visited.Contains(key))
             {
                 return;
@@ -1249,7 +1232,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             dequeued++;
 
             Block fluid = ba.GetBlock(p, BlockLayersAccess.Fluid);
-            string pkey = PosKey(p);
+            long pkey = ArchimedesPosKey.Pack(p);
             bool isUnownedManagedSelfSustaining =
                 IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
                 !sourceOwnerByPos.ContainsKey(pkey);
@@ -1369,7 +1352,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public int AssignConnectedSourceToActiveControllers(BlockPos pos, string reason)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsArchimedesSourceBlock(fluidBlock))
         {
@@ -1386,7 +1369,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public void OnManagedWaterRemoved(BlockPos pos)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         if (suppressedRemovalNotifications.TryRemove(key, out _))
         {
             return;
@@ -1442,7 +1425,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         if (IsArchimedesWaterBlock(currentFluid))
         {
-            SuppressRemovalNotification(PosKey(pos));
+            SuppressRemovalNotification(ArchimedesPosKey.Pack(pos));
         }
 
         bool transitionedFromNonLiquid = currentFluid.Id == 0 || !currentFluid.IsLiquid();
@@ -1581,7 +1564,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 continue;
             }
 
-            if (!sourceOwnerByPos.ContainsKey(PosKey(adjacentPos)))
+            if (!sourceOwnerByPos.ContainsKey(ArchimedesPosKey.Pack(adjacentPos)))
             {
                 continue;
             }
@@ -1598,7 +1581,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private bool TryAdoptManagedSelfSustainingSource(BlockPos pos, string familyId, string? ownerHintControllerId)
     {
-        string key = PosKey(pos);
+        long key = ArchimedesPosKey.Pack(pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsManagedSelfSustainingSourceForFamily(fluidBlock, familyId) ||
             sourceOwnerByPos.ContainsKey(key) ||
@@ -1630,7 +1613,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return assigned;
     }
 
-    private bool IsManagedAdoptionCoolingDown(string key, out long cooldownRemainingMs)
+    private bool IsManagedAdoptionCoolingDown(long key, out long cooldownRemainingMs)
     {
         cooldownRemainingMs = 0;
         if (!managedAdoptionCooldownUntilMsByKey.TryGetValue(key, out long untilMs))
@@ -1649,7 +1632,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return true;
     }
 
-    private void RemoveOrphanedManagedSource(BlockPos pos, string key)
+    private void RemoveOrphanedManagedSource(BlockPos pos, long key)
     {
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsArchimedesSourceBlock(fluidBlock))
@@ -1681,7 +1664,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return false;
         }
 
-        Dictionary<string, BlockPos> connectedWater = connectedResult.PositionsByKey;
+        Dictionary<long, BlockPos> connectedWater = connectedResult.PositionsByKey;
         string? nearest = FindNearestActiveControllerId(
             sourcePos,
             connectedWater.Keys,
@@ -1694,7 +1677,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return false;
         }
 
-        string key = PosKey(sourcePos);
+        long key = ArchimedesPosKey.Pack(sourcePos);
         sourceOwnerByPos[key] = nearest;
         AddOwnedPosToSnapshot(nearest, sourcePos);
         NotifyControllerSourceAssigned(nearest, sourcePos, reason);
@@ -1703,15 +1686,15 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private string? FindNearestActiveControllerId(
         BlockPos sourcePos,
-        IEnumerable<string> connectedWaterKeys,
+        IEnumerable<long> connectedWaterKeys,
         string familyId,
         string? excludedControllerId,
         bool requireConnected
     )
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.findNearestActiveController");
-        HashSet<string>? connected = requireConnected
-            ? new HashSet<string>(connectedWaterKeys, StringComparer.Ordinal)
+        HashSet<long>? connected = requireConnected
+            ? new HashSet<long>(connectedWaterKeys)
             : null;
 
         List<ArchimedesOutletState> candidates = new();
@@ -1737,7 +1720,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
                 // Source component has already been collected by the caller.
                 // If a candidate seed's position is part of that same component, it is connected.
-                if (!connected.Contains(PosKey(seed.SeedPos)))
+                if (!connected.Contains(ArchimedesPosKey.Pack(seed.SeedPos)))
                 {
                     continue;
                 }
@@ -1769,20 +1752,20 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private void AddOwnedPosToSnapshot(string controllerId, BlockPos pos)
     {
-        HashSet<string> keys = new(StringComparer.Ordinal);
+        HashSet<long> keys = new();
         List<BlockPos> list = new();
         if (controllerOwnedById.TryGetValue(controllerId, out int[]? existing))
         {
             foreach (BlockPos ex in ArchimedesPositionCodec.DecodePositions(existing))
             {
-                if (keys.Add(PosKey(ex)))
+                if (keys.Add(ArchimedesPosKey.Pack(ex)))
                 {
                     list.Add(ex);
                 }
             }
         }
 
-        if (keys.Add(PosKey(pos)))
+        if (keys.Add(ArchimedesPosKey.Pack(pos)))
         {
             list.Add(pos.Copy());
         }
@@ -1797,15 +1780,15 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return;
         }
 
-        string removeKey = PosKey(pos);
+        long removeKey = ArchimedesPosKey.Pack(pos);
         List<BlockPos> kept = ArchimedesPositionCodec.DecodePositions(existing)
-            .Where(p => !string.Equals(PosKey(p), removeKey, StringComparison.Ordinal))
+            .Where(p => ArchimedesPosKey.Pack(p) != removeKey)
             .Select(p => p.Copy())
             .ToList();
         controllerOwnedById[controllerId] = ArchimedesPositionCodec.EncodePositions(kept);
     }
 
-    private void SuppressRemovalNotification(string key)
+    private void SuppressRemovalNotification(long key)
     {
         suppressedRemovalNotifications[key] = 1;
     }
@@ -1912,13 +1895,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private sealed record ConnectedManagedComponentCacheEntry(
         int Generation,
-        HashSet<string> Visited,
-        Dictionary<string, BlockPos> PositionsByKey,
+        HashSet<long> Visited,
+        Dictionary<long, BlockPos> PositionsByKey,
         bool IsTruncated,
         int VisitedManagedCount
     );
 
-    private bool ControllerSnapshotContainsPos(string controllerId, string key)
+    private bool ControllerSnapshotContainsPos(string controllerId, long key)
     {
         if (!controllerOwnedById.TryGetValue(controllerId, out int[]? encoded))
         {
@@ -1927,7 +1910,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(encoded))
         {
-            if (string.Equals(PosKey(pos), key, StringComparison.Ordinal))
+            if (ArchimedesPosKey.Pack(pos) == key)
             {
                 return true;
             }
@@ -1960,8 +1943,8 @@ public readonly record struct ManagedSourceDebugInfo(
 );
 
 public readonly record struct ConnectedManagedWaterResult(
-    HashSet<string> VisitedKeys,
-    Dictionary<string, BlockPos> PositionsByKey,
+    HashSet<long> VisitedKeys,
+    Dictionary<long, BlockPos> PositionsByKey,
     bool IsTruncated,
     int VisitedManagedCount
 );

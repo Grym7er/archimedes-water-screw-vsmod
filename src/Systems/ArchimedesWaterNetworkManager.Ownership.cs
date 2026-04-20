@@ -103,17 +103,17 @@ public sealed partial class ArchimedesWaterNetworkManager
         IReadOnlyCollection<BlockPos> sourcePositions,
         out int removedStaleSourceOwnerKeys)
     {
-        controllerPosById[controllerId] = PosKey(controllerPos);
+        controllerPosById[controllerId] = ArchimedesPosKey.Pack(controllerPos);
         controllerOwnedById[controllerId] = ArchimedesPositionCodec.EncodePositions(sourcePositions);
 
-        HashSet<string> newKeys = new(StringComparer.Ordinal);
+        HashSet<long> newKeys = new();
         foreach (BlockPos pos in sourcePositions)
         {
-            newKeys.Add(PosKey(pos));
+            newKeys.Add(ArchimedesPosKey.Pack(pos));
         }
 
-        List<string> toRemove = new();
-        foreach (KeyValuePair<string, string> pair in sourceOwnerByPos)
+        List<long> toRemove = new();
+        foreach (KeyValuePair<long, string> pair in sourceOwnerByPos)
         {
             if (string.Equals(pair.Value, controllerId, StringComparison.Ordinal) && !newKeys.Contains(pair.Key))
             {
@@ -122,14 +122,14 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         removedStaleSourceOwnerKeys = toRemove.Count;
-        foreach (string key in toRemove)
+        foreach (long key in toRemove)
         {
             sourceOwnerByPos.Remove(key);
         }
 
         foreach (BlockPos pos in sourcePositions)
         {
-            string key = PosKey(pos);
+            long key = ArchimedesPosKey.Pack(pos);
             sourceOwnerByPos[key] = controllerId;
             if (!sourceProvenanceByPos.ContainsKey(key))
             {
@@ -145,8 +145,8 @@ public sealed partial class ArchimedesWaterNetworkManager
         loadedControllers.Remove(controllerId);
         UnregisterFromCentralWaterTick(controllerId);
 
-        List<string> ownedKeys = new();
-        foreach (KeyValuePair<string, string> pair in sourceOwnerByPos)
+        List<long> ownedKeys = new();
+        foreach (KeyValuePair<long, string> pair in sourceOwnerByPos)
         {
             if (string.Equals(pair.Value, controllerId, StringComparison.Ordinal))
             {
@@ -154,7 +154,7 @@ public sealed partial class ArchimedesWaterNetworkManager
             }
         }
 
-        foreach (string key in ownedKeys)
+        foreach (long key in ownedKeys)
         {
             sourceOwnerByPos.Remove(key);
             sourceProvenanceByPos.Remove(key);
