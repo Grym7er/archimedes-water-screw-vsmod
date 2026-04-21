@@ -510,7 +510,8 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     IsOwned = source.IsOwned,
                     OwnerId = source.OwnerId,
                     IsOwnershipConsistent = source.IsOwnershipConsistent,
-                    IsRelay = WaterManager.IsRelayOwnedPosition(source.Pos)
+                    IsRelay = WaterManager.IsRelayOwnedPosition(source.Pos),
+                    IsHeight7Source = source.IsHeight7Source
                 });
             }
 

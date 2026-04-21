@@ -45,6 +45,14 @@ public sealed class ArchimedesWaterDebugSourcePacket
 
     [ProtoMember(7)]
     public bool IsRelay { get; set; }
+
+    /// <summary>
+    /// True if the fluid at this pos is an Archimedes managed height-7 (self-sustaining) source block.
+    /// Height-6 managed water cells are still reported in the snapshot (for ownership visualization),
+    /// but must not be treated as true sources by downstream consumers.
+    /// </summary>
+    [ProtoMember(8)]
+    public bool IsHeight7Source { get; set; }
 }
 
 [ProtoContract]
@@ -115,6 +123,10 @@ internal sealed class ArchimedesWaterDebugOverlay
     private static readonly int UnownedColor = PackHighlightRgba(0xFF, 0x00, 0x00);
     private static readonly int InconsistentOwnedColor = PackHighlightRgba(0xFF, 0xCC, 0x00);
     private static readonly int RelayCandidateColor = PackHighlightRgba(0xB0, 0x40, 0xFF);
+    /// <summary>Dimmer cyan cube for owned height-6 managed water (flowing, not a true self-sustaining source).</summary>
+    private static readonly int FlowCellOwnedColor = PackHighlightRgba(0x00, 0xB0, 0xC0, 0x88);
+    /// <summary>Dimmer magenta cube for unowned height-6 managed water.</summary>
+    private static readonly int FlowCellUnownedColor = PackHighlightRgba(0xC0, 0x00, 0x80, 0x88);
 
     private readonly ICoreClientAPI capi;
     private readonly string networkChannelName;
@@ -218,9 +230,16 @@ internal sealed class ArchimedesWaterDebugOverlay
             .Select(s => new BlockPos(s.X, s.Y, s.Z))
             .ToList();
         List<int> sourceColors = packet.Sources
-            .Select(s => s.IsOwned
-                ? (s.IsOwnershipConsistent ? OwnedColor : InconsistentOwnedColor)
-                : UnownedColor)
+            .Select(s =>
+            {
+                if (!s.IsHeight7Source)
+                {
+                    return s.IsOwned ? FlowCellOwnedColor : FlowCellUnownedColor;
+                }
+                return s.IsOwned
+                    ? (s.IsOwnershipConsistent ? OwnedColor : InconsistentOwnedColor)
+                    : UnownedColor;
+            })
             .ToList();
 
         capi.World.HighlightBlocks(

@@ -180,9 +180,11 @@ This simpler loop is easier to implement and should satisfy "water leaves aquedu
 
 - Ensure egress and in-aqueduct cells are promptly assigned owner.
 - Reuse existing anti-thrash signals:
-  - `MarkDrainQuarantine`
-  - local source cooldown and adoption cooldown semantics
+  - `MarkDrainQuarantine` - cells inside HCW aqueducts use a 2x quarantine TTL (`AqueductDrainQuarantineMultiplier`) to absorb the HCW refill cycle without triggering re-promotion churn.
+  - local source cooldown and adoption cooldown semantics.
 - Avoid creating a separate ownership model in compat layer.
+
+**Defensive handshake (active):** `ArchimedesWaterBlockHelper.NotifyManagerOnRemoval` detects the HCW refill pattern where an aqueduct cell flips from same-family managed water to same-family vanilla water. In that case the manager enqueues a reconversion intent with the prior owner supplied as `ownerHintControllerId`, so the cell is reclaimed by its original controller on the next intent pass rather than entering the generic relay-promotion queue. Combined with the 2x aqueduct quarantine TTL this eliminates the ownership-loss flicker observed during HCW source-pulse cycles without requiring any Harmony patches.
 
 ---
 

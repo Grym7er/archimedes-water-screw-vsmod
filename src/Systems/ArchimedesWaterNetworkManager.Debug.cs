@@ -51,6 +51,7 @@ public sealed partial class ArchimedesWaterNetworkManager
                     bool isOwnershipConsistent = isOwned &&
                                                  ownerSnapshotContainsPos &&
                                                  (!ownerControllerLoaded || ownerLoadedControllerTracksPos);
+                    bool isHeight7Source = IsArchimedesSourceBlock(fluid);
                     result.Add(new ManagedSourceDebugInfo(
                         pos.Copy(),
                         isOwned,
@@ -58,7 +59,8 @@ public sealed partial class ArchimedesWaterNetworkManager
                         isOwnershipConsistent,
                         ownerSnapshotContainsPos,
                         ownerControllerLoaded,
-                        ownerLoadedControllerTracksPos
+                        ownerLoadedControllerTracksPos,
+                        isHeight7Source
                     ));
                 }
             }

@@ -207,59 +207,26 @@ public sealed partial class ArchimedesWaterNetworkManager
         return offsets;
     }
 
-    private string? ResolveDomainLeaderControllerId(BlockPos sourcePos, string familyId, IEnumerable<long> connectedWaterKeys)
-    {
-        HashSet<long> connected = new(connectedWaterKeys);
-        List<ArchimedesOutletState> candidates = new();
-        foreach (ArchimedesOutletState seed in GetActiveSeedStatesCached())
-        {
-            if (!string.Equals(seed.FamilyId, familyId, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!connected.Contains(ArchimedesPosKey.Pack(seed.SeedPos)))
-            {
-                continue;
-            }
-
-            candidates.Add(seed);
-        }
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        return candidates
-            .OrderBy(seed => seed.ControllerId, StringComparer.Ordinal)
-            .ThenBy(seed => ArchimedesPositionCodec.DistanceSquared(sourcePos, seed.SeedPos))
-            .Select(seed => seed.ControllerId)
-            .FirstOrDefault();
-    }
-
+    /// <summary>
+    /// Territorial first-claim policy: a controller may claim <paramref name="sourcePos"/> if it is unowned,
+    /// or if this controller already owns it. No leader arbitration; ownership is sticky until the cell drains.
+    /// Same-tick contention is broken by lowest controller id via the pre-sorted dispatch order.
+    /// <paramref name="familyId"/> is reserved for future per-family arbitration but ignored today.
+    /// </summary>
     private bool CanControllerClaimInDomain(string controllerId, BlockPos sourcePos, string familyId)
     {
-        ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterCachedDetailed(sourcePos);
-        if (connectedResult.IsTruncated)
+        long key = ArchimedesPosKey.Pack(sourcePos);
+        if (sourceOwnerByPos.TryGetValue(key, out string? currentOwner))
         {
-            ArchimedesPerf.AddCount("water.claims.rejected.truncatedComponent");
-            return false;
+            bool sameOwner = string.Equals(currentOwner, controllerId, StringComparison.Ordinal);
+            if (!sameOwner)
+            {
+                ArchimedesPerf.AddCount("water.claims.rejected.alreadyOwned");
+            }
+            return sameOwner;
         }
 
-        string? leader = ResolveDomainLeaderControllerId(sourcePos, familyId, connectedResult.VisitedKeys);
-        if (leader == null)
-        {
-            return true;
-        }
-
-        bool allowed = string.Equals(controllerId, leader, StringComparison.Ordinal);
-        if (!allowed)
-        {
-            ArchimedesPerf.AddCount("water.claims.rejected.domainNotLeader");
-        }
-
-        return allowed;
+        return true;
     }
 
     private readonly record struct ConversionIntent(

@@ -73,6 +73,8 @@ public sealed partial class ArchimedesWaterNetworkManager
         sourceOwnerByPos.Clear();
         unownedCleanupCooldownUntilMsByKey.Clear();
         controllerOwnedById.Clear();
+        controllerRelaySourceKeys.Clear();
+        relayOwnerByPos.Clear();
 
         api.Logger.Notification(
             "{0} PurgeManagedWater deleted {1} Archimedes water blocks",
@@ -184,6 +186,8 @@ public sealed partial class ArchimedesWaterNetworkManager
         sourceOwnerByPos.Clear();
         unownedCleanupCooldownUntilMsByKey.Clear();
         controllerOwnedById.Clear();
+        controllerRelaySourceKeys.Clear();
+        relayOwnerByPos.Clear();
 
         api.Logger.Notification(
             "{0} PurgeArchimedesWaterByChunkScan deleted {1} Archimedes water blocks (scannedChunks={2}, radius={3})",

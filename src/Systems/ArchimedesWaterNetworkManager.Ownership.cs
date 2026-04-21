@@ -145,6 +145,18 @@ public sealed partial class ArchimedesWaterNetworkManager
         loadedControllers.Remove(controllerId);
         UnregisterFromCentralWaterTick(controllerId);
 
+        if (controllerRelaySourceKeys.Remove(controllerId, out HashSet<long>? removedRelayKeys))
+        {
+            foreach (long relayKey in removedRelayKeys)
+            {
+                if (relayOwnerByPos.TryGetValue(relayKey, out string? owner) &&
+                    string.Equals(owner, controllerId, StringComparison.Ordinal))
+                {
+                    relayOwnerByPos.Remove(relayKey);
+                }
+            }
+        }
+
         List<long> ownedKeys = new();
         foreach (KeyValuePair<long, string> pair in sourceOwnerByPos)
         {

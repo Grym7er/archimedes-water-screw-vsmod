@@ -30,6 +30,12 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     private readonly Dictionary<long, BlockPos> ownedPositions = new();
     private readonly Dictionary<long, BlockPos> relayOwnedPositions = new();
+
+    /// <summary>
+    /// Per-relay promotion timestamp (Environment.TickCount64). Used by age-based trim to drop newest first.
+    /// Entries restored from save are stamped 0 so legacy relays are treated as oldest (kept preferentially).
+    /// </summary>
+    private readonly Dictionary<long, long> relayPromotedAtMsByKey = new();
     private readonly Dictionary<long, long> sourceCooldownUntilMsByKey = new();
     private static readonly HashSet<long> EmptyKeySet = new();
 
@@ -90,6 +96,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
         if (relayOwnedPositions.Count > 0)
         {
+            waterManager?.ReplaceRelaySnapshotForController(ControllerId, relayOwnedPositions.Values.ToList());
             Log("Restored {0} relay-owned source positions from save", relayOwnedPositions.Count);
         }
 
@@ -154,6 +161,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         waterConfig ??= modSystem.Config.Water;
         drainUnsupportedGraceUntilMs = Environment.TickCount64 + PostLoadDrainUnsupportedGraceMs;
         mgr.RegisterRestoredOwnership(ControllerId, Pos, ownedPositions.Values.ToList());
+        if (relayOwnedPositions.Count > 0)
+        {
+            mgr.ReplaceRelaySnapshotForController(ControllerId, relayOwnedPositions.Values.ToList());
+        }
         sourceCount = ownedPositions.Count;
         return true;
     }
@@ -275,7 +286,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     {
         long key = ArchimedesPosKey.Pack(pos);
         ownedPositions.Remove(key);
-        relayOwnedPositions.Remove(key);
+        RemoveRelayOwnership(key);
         MarkDirty();
         Log("Tracked Archimedes source removed externally at {0}; ownership updated", pos);
     }
@@ -303,10 +314,28 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return relayOwnedPositions.ContainsKey(ArchimedesPosKey.Pack(pos));
     }
 
+    private void AddRelayOwnership(long key, BlockPos pos, long promotedAtMs)
+    {
+        relayOwnedPositions[key] = pos;
+        relayPromotedAtMsByKey[key] = promotedAtMs;
+    }
+
+    private void RemoveRelayOwnership(long key)
+    {
+        relayOwnedPositions.Remove(key);
+        relayPromotedAtMsByKey.Remove(key);
+    }
+
+    private void ClearAllRelayOwnership()
+    {
+        relayOwnedPositions.Clear();
+        relayPromotedAtMsByKey.Clear();
+    }
+
     public void ClearOwnedStateAfterPurge()
     {
         ownedPositions.Clear();
-        relayOwnedPositions.Clear();
+        ClearAllRelayOwnership();
         wasController = false;
         lastSeedPos = null;
         lastLoggedSeedKey = null;
@@ -320,7 +349,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (waterManager == null)
         {
             ownedPositions.Clear();
-            relayOwnedPositions.Clear();
+            ClearAllRelayOwnership();
             Log("Release requested for reason '{0}', but water manager is null", reason);
             return;
         }
@@ -362,7 +391,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         ownedPositions.Clear();
-        relayOwnedPositions.Clear();
+        ClearAllRelayOwnership();
         waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
         CleanupUnownedManagedSourcesForControllerState();
         MarkDirty();
@@ -403,12 +432,13 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         byte[]? relayBytes = tree.GetBytes(RelayPositionsKey);
-        relayOwnedPositions.Clear();
+        ClearAllRelayOwnership();
         if (relayBytes != null)
         {
             foreach (BlockPos pos in SafeDecodePositionArray(relayBytes, RelayPositionsKey))
             {
-                relayOwnedPositions[ArchimedesPosKey.Pack(pos)] = pos;
+                long key = ArchimedesPosKey.Pack(pos);
+                AddRelayOwnership(key, pos, promotedAtMs: 0L);
             }
         }
 
@@ -520,9 +550,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             // Low-cadence skips relay/full scan but must still drain: otherwise consistent owned
             // sources (debugwater green) can sit forever with no release tick.
-            List<ArchimedesOutletState> skipPathSeeds =
-                ResolveSupportingSeeds(seedPos, connectedResult.VisitedKeys);
-            DrainUnsupportedSources(skipPathSeeds, connectedResult.VisitedKeys, string.Empty);
+            // Skip drain when BFS truncated - we would otherwise release relays beyond the BFS budget.
+            if (!isTruncated)
+            {
+                List<ArchimedesOutletState> skipPathSeeds =
+                    ResolveSupportingSeeds(seedPos, connectedResult.VisitedKeys);
+                DrainUnsupportedSources(skipPathSeeds, connectedResult.VisitedKeys, string.Empty);
+            }
+            else
+            {
+                ArchimedesPerf.AddCount("controller.drainUnsupported.skippedTruncated");
+            }
             lowCadenceScanSkipsRemaining--;
             ArchimedesPerf.AddCount("controller.connectivityScan.skipped");
             ScheduleNextWaterTick(ArchimedesScrewControllerSchedule.LowCadence, fastMs, idleMs);
@@ -549,10 +587,20 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         int removedDisconnected = 0;
         List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWaterKeys);
-        removedDisconnected = DrainUnsupportedSources(
-            supportingSeeds,
-            connectedWaterKeys,
-            isTruncated ? "managed-bfs-truncated" : string.Empty);
+        if (isTruncated)
+        {
+            // Skip drain when BFS could not enumerate the full component: any "unsupported" entries
+            // we'd find are likely just beyond the BFS budget, not genuinely disconnected. They will
+            // be reconsidered next tick.
+            ArchimedesPerf.AddCount("controller.drainUnsupported.skippedTruncated");
+        }
+        else
+        {
+            removedDisconnected = DrainUnsupportedSources(
+                supportingSeeds,
+                connectedWaterKeys,
+                string.Empty);
+        }
 
         if (ensuredSeed)
         {
@@ -952,14 +1000,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 continue;
             }
 
-            if (!waterManager.AssignOwnedSourceForController(ControllerId, pos, familyId))
+            if (!waterManager.AssignRelaySourceForController(ControllerId, pos, familyId))
             {
                 rejectedAssignFailed++;
                 continue;
             }
 
             ownedPositions[key] = pos.Copy();
-            relayOwnedPositions[key] = pos.Copy();
+            AddRelayOwnership(key, pos.Copy(), Environment.TickCount64);
             created++;
             ownershipChurnTotal++;
         }
@@ -987,19 +1035,21 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         int overflow = relayOwnedPositions.Count - relayCap;
         int removeCount = Math.Min(Math.Max(1, perTickBudget), overflow);
-        List<BlockPos> ordered = relayOwnedPositions.Values
-            .OrderByDescending(pos => ArchimedesPositionCodec.DistanceSquared(pos, seedPos))
-            .ThenByDescending(pos => pos.Y)
+        // Age-based trim: newest promotions are released first; legacy entries (PromotedAtMs == 0) are kept.
+        List<BlockPos> ordered = relayOwnedPositions
+            .OrderByDescending(kvp => relayPromotedAtMsByKey.TryGetValue(kvp.Key, out long ts) ? ts : 0L)
+            .ThenByDescending(kvp => ArchimedesPositionCodec.DistanceSquared(kvp.Value, seedPos))
+            .Select(kvp => kvp.Value)
             .Take(removeCount)
             .ToList();
         foreach (BlockPos pos in ordered)
         {
             long key = ArchimedesPosKey.Pack(pos);
-            relayOwnedPositions.Remove(key);
+            RemoveRelayOwnership(key);
             ownedPositions.Remove(key);
             NoteLocalSourceCooldown(key);
             waterManager.MarkDrainQuarantine(pos);
-            waterManager.ReleaseOwnedSourceForController(ControllerId, pos);
+            waterManager.ReleaseRelaySourceForController(ControllerId, pos);
             ownershipChurnTotal++;
         }
 
@@ -1261,7 +1311,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             // Remove only when ownership no longer includes this relay position.
             if (!stillOwned)
             {
-                relayOwnedPositions.Remove(key);
+                RemoveRelayOwnership(key);
                 removedInvalidKeys++;
                 if (invalidSamples.Count < maxSampleCount)
                 {
@@ -1362,7 +1412,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             BlockPos pos = releaseCandidates[i];
             long key = ArchimedesPosKey.Pack(pos);
             ownedPositions.Remove(key);
-            relayOwnedPositions.Remove(key);
+            RemoveRelayOwnership(key);
             NoteLocalSourceCooldown(key);
             waterManager.MarkDrainQuarantine(pos);
             waterManager.ReleaseOwnedSourceForController(ControllerId, pos);

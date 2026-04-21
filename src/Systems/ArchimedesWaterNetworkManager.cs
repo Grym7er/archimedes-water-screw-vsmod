@@ -23,6 +23,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private const int ManagedAdoptionCooldownAfterReleaseMs = 2500;
     private const int DrainQuarantineMs = 1500;
 
+    /// <summary>
+    /// Multiplier applied to <see cref="DrainQuarantineMs"/> for cells inside HardcoreWater aqueducts,
+    /// to absorb the HCW refill cycle without triggering re-promotion churn.
+    /// TODO: expose via config if players need to tune this.
+    /// </summary>
+    private const int AqueductDrainQuarantineMultiplier = 2;
+
     private readonly ICoreServerAPI api;
     private readonly ArchimedesScrewConfig config;
 
@@ -37,6 +44,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private readonly ConcurrentDictionary<long, byte> suppressedRemovalNotifications = new();
     private readonly Dictionary<string, Block> managedBlockCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<long>> controllerRelaySourceKeys = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Reverse index of <see cref="controllerRelaySourceKeys"/>: packed pos key -> owning controllerId.
+    /// Authoritative source of truth for "is this cell relay-owned" queries; survives BE chunk unload.
+    /// </summary>
+    private readonly Dictionary<long, string> relayOwnerByPos = new();
 
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> centralWaterTickControllers = new(StringComparer.Ordinal);
     private readonly List<string> centralWaterTickOrder = new();
@@ -184,7 +197,17 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         centralWaterTickControllers[id] = new WeakReference<BlockEntityWaterArchimedesScrew>(controller);
         if (centralWaterTickSet.Add(id))
         {
-            centralWaterTickOrder.Add(id);
+            int insertAt = centralWaterTickOrder.BinarySearch(id, StringComparer.Ordinal);
+            if (insertAt < 0)
+            {
+                insertAt = ~insertAt;
+            }
+            centralWaterTickOrder.Insert(insertAt, id);
+
+            if (insertAt <= centralWaterTickCursor && centralWaterTickOrder.Count > 1)
+            {
+                centralWaterTickCursor++;
+            }
         }
     }
 
@@ -286,6 +309,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         controllerPosById.Clear();
         controllerOwnedById.Clear();
         controllerRelaySourceKeys.Clear();
+        relayOwnerByPos.Clear();
         sourceOwnerByPos.Clear();
         sourceProvenanceByPos.Clear();
         lockedVanillaFamilyByPos.Clear();
@@ -412,7 +436,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 HashSet<long> relayKeys = new();
                 foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatPositions))
                 {
-                    relayKeys.Add(ArchimedesPosKey.Pack(pos));
+                    long packed = ArchimedesPosKey.Pack(pos);
+                    relayKeys.Add(packed);
+                    relayOwnerByPos[packed] = cId;
                 }
 
                 controllerRelaySourceKeys[cId] = relayKeys;
@@ -598,7 +624,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     public void MarkDrainQuarantine(BlockPos pos, int durationMs = DrainQuarantineMs)
     {
         long key = ArchimedesPosKey.Pack(pos);
-        long until = Environment.TickCount64 + Math.Max(0, durationMs);
+        int effectiveDurationMs = durationMs;
+        if (ArchimedesAqueductDetector.IsAqueductCell(api.World, pos))
+        {
+            effectiveDurationMs = Math.Max(durationMs, durationMs * AqueductDrainQuarantineMultiplier);
+        }
+        long until = Environment.TickCount64 + Math.Max(0, effectiveDurationMs);
         if (drainQuarantineUntilMsByKey.TryGetValue(key, out long existingUntil) && existingUntil >= until)
         {
             return;
@@ -1034,19 +1065,87 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             controllerRelaySourceKeys[controllerId] = relayKeys;
         }
 
-        relayKeys.Add(key);
+        if (relayKeys.Add(key))
+        {
+            relayOwnerByPos[key] = controllerId;
+        }
         return true;
     }
 
     public void ReleaseRelaySourceForController(string controllerId, BlockPos pos)
     {
         long key = ArchimedesPosKey.Pack(pos);
-        if (controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? relayKeys))
+        if (controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? relayKeys) &&
+            relayKeys.Remove(key) &&
+            relayOwnerByPos.TryGetValue(key, out string? currentOwner) &&
+            string.Equals(currentOwner, controllerId, StringComparison.Ordinal))
         {
-            relayKeys.Remove(key);
+            relayOwnerByPos.Remove(key);
         }
 
         ReleaseOwnedSourceForController(controllerId, pos);
+    }
+
+    /// <summary>
+    /// Replaces the entire relay snapshot for a controller (used by BE post-load hydration).
+    /// Adds entries for new positions and removes entries for stale ones, syncing the reverse index.
+    /// </summary>
+    public void ReplaceRelaySnapshotForController(string controllerId, IReadOnlyCollection<BlockPos> relayPositions)
+    {
+        HashSet<long> newKeys = new();
+        foreach (BlockPos pos in relayPositions)
+        {
+            newKeys.Add(ArchimedesPosKey.Pack(pos));
+        }
+
+        if (controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? existingKeys))
+        {
+            foreach (long staleKey in existingKeys.Where(k => !newKeys.Contains(k)).ToList())
+            {
+                existingKeys.Remove(staleKey);
+                if (relayOwnerByPos.TryGetValue(staleKey, out string? owner) &&
+                    string.Equals(owner, controllerId, StringComparison.Ordinal))
+                {
+                    relayOwnerByPos.Remove(staleKey);
+                }
+            }
+        }
+        else
+        {
+            existingKeys = new HashSet<long>();
+            controllerRelaySourceKeys[controllerId] = existingKeys;
+        }
+
+        foreach (long key in newKeys)
+        {
+            if (existingKeys.Add(key))
+            {
+                relayOwnerByPos[key] = controllerId;
+            }
+            else
+            {
+                relayOwnerByPos[key] = controllerId;
+            }
+        }
+    }
+
+    /// <summary>True if any controller has claimed <paramref name="pos"/> as a relay-owned source.</summary>
+    public bool IsRelayOwnedPosition(BlockPos pos)
+    {
+        return relayOwnerByPos.ContainsKey(ArchimedesPosKey.Pack(pos));
+    }
+
+    /// <summary>Returns the controller id that owns <paramref name="pos"/> as a relay, or null.</summary>
+    public bool TryGetRelayOwner(BlockPos pos, out string controllerId)
+    {
+        if (relayOwnerByPos.TryGetValue(ArchimedesPosKey.Pack(pos), out string? owner))
+        {
+            controllerId = owner;
+            return true;
+        }
+
+        controllerId = string.Empty;
+        return false;
     }
 
     public bool EnsureSourceOwnership(string ownerId, BlockPos pos)
@@ -1085,9 +1184,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         sourceOwnerByPos.Remove(key);
         sourceProvenanceByPos.Remove(key);
         managedAdoptionCooldownUntilMsByKey[key] = Environment.TickCount64 + ManagedAdoptionCooldownAfterReleaseMs;
-        if (controllerRelaySourceKeys.TryGetValue(owner, out HashSet<long>? ownerRelayKeys))
+        if (controllerRelaySourceKeys.TryGetValue(owner, out HashSet<long>? ownerRelayKeys) &&
+            ownerRelayKeys.Remove(key) &&
+            relayOwnerByPos.TryGetValue(key, out string? currentRelayOwner) &&
+            string.Equals(currentRelayOwner, owner, StringComparison.Ordinal))
         {
-            ownerRelayKeys.Remove(key);
+            relayOwnerByPos.Remove(key);
         }
 
         RemoveOwnedPosFromSnapshot(ownerId, pos);
@@ -1527,9 +1629,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         sourceProvenanceByPos.Remove(key);
         RemoveOwnedPosFromSnapshot(ownerId, pos);
-        if (controllerRelaySourceKeys.TryGetValue(ownerId, out HashSet<long>? removedRelayKeys))
+        if (controllerRelaySourceKeys.TryGetValue(ownerId, out HashSet<long>? removedRelayKeys) &&
+            removedRelayKeys.Remove(key) &&
+            relayOwnerByPos.TryGetValue(key, out string? currentRemovedOwner) &&
+            string.Equals(currentRemovedOwner, ownerId, StringComparison.Ordinal))
         {
-            removedRelayKeys.Remove(key);
+            relayOwnerByPos.Remove(key);
         }
 
         if (loadedControllers.TryGetValue(ownerId, out WeakReference<BlockEntityWaterArchimedesScrew>? reference) &&
@@ -2099,7 +2204,8 @@ public readonly record struct ManagedSourceDebugInfo(
     bool IsOwnershipConsistent,
     bool OwnerSnapshotContainsPos,
     bool OwnerControllerLoaded,
-    bool OwnerLoadedControllerTracksPos
+    bool OwnerLoadedControllerTracksPos,
+    bool IsHeight7Source
 );
 
 public readonly record struct ConnectedManagedWaterResult(

@@ -35,10 +35,31 @@ internal static class ArchimedesWaterBlockHelper
         // Keep ownership stable across managed variant transitions (e.g. still-7 -> still-6).
         // The old block is "removed" by fluid simulation, but this is not true source loss.
         if (manager.IsArchimedesWaterBlock(replacementFluid) &&
-            manager.TryResolveManagedWaterFamily(removedBlock, out string removedFamilyId) &&
-            manager.TryResolveManagedWaterFamily(replacementFluid, out string replacementFamilyId) &&
-            string.Equals(removedFamilyId, replacementFamilyId, StringComparison.Ordinal))
+            manager.TryResolveManagedWaterFamily(removedBlock, out string removedManagedFamilyId) &&
+            manager.TryResolveManagedWaterFamily(replacementFluid, out string replacementManagedFamilyId) &&
+            string.Equals(removedManagedFamilyId, replacementManagedFamilyId, StringComparison.Ordinal))
         {
+            return;
+        }
+
+        // Defensive HCW interop: when an aqueduct cell flips from managed water to vanilla water of the same
+        // family (typical HCW refill cycle), queue a fast reclaim with the prior owner as a hint so the
+        // ownership "drop" is observable for at most one intent-tick instead of triggering a full re-promotion.
+        bool removedWasManaged = manager.TryResolveManagedWaterFamily(removedBlock, out string removedFamilyForHandoff);
+        if (removedWasManaged &&
+            ArchimedesAqueductDetector.IsAqueductCell(world, pos) &&
+            manager.TryResolveVanillaWaterFamily(replacementFluid, out string vanillaInAqueductFamily) &&
+            string.Equals(removedFamilyForHandoff, vanillaInAqueductFamily, StringComparison.Ordinal))
+        {
+            manager.TryGetSourceOwner(pos, out string aqueductOwnerHint);
+            manager.OnManagedWaterRemoved(pos);
+            manager.EnqueueConversionIntent(
+                pos,
+                vanillaInAqueductFamily,
+                ownerHintControllerId: string.IsNullOrEmpty(aqueductOwnerHint) ? null : aqueductOwnerHint,
+                reason: "aqueduct refill: same-family vanilla replaced managed water",
+                playerIntent: false
+            );
             return;
         }
 

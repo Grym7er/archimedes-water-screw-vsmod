@@ -178,10 +178,10 @@
         "ingui": "archimedes_screw:config-max-relay-sources-per-controller",
         "weight": 4.8,
         "comment": "Upper bound of relay-created sources a controller may own at full power.",
-        "default": 12,
+        "default": 48,
         "range": {
           "min": 0,
-          "max": 256,
+          "max": 2048,
           "step": 1
         }
       }

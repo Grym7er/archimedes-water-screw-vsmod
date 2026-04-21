@@ -19,12 +19,17 @@ internal static class ArchimedesRelayCandidateRules
         bool isAqueduct = IsHardcoreWaterAqueduct(solid);
         if (isAqueduct)
         {
+            if (ArchimedesRelayAdjacency.IsRelayBelowBlockedByWater(world, pos))
+            {
+                return false;
+            }
+
             if (!manager.TryResolveIntakeWaterFamily(candidateFluid, out string candidateFamilyId))
             {
                 return false;
             }
 
-            if (!HasOrientationAlignedSameFamilyWaterOutsideAqueduct(world, pos, solid, candidateFamilyId, manager))
+            if (!HasOrientationAlignedQualifyingNeighbor(world, pos, solid, candidateFamilyId, manager))
             {
                 return false;
             }
@@ -39,16 +44,10 @@ internal static class ArchimedesRelayCandidateRules
 
     private static bool IsHardcoreWaterAqueduct(Block solid)
     {
-        AssetLocation? code = solid.Code;
-        if (code == null || !string.Equals(code.Domain, "hardcorewater", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        return code.Path.Contains("aqueduct", StringComparison.Ordinal);
+        return ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(solid);
     }
 
-    private static bool HasOrientationAlignedSameFamilyWaterOutsideAqueduct(
+    private static bool HasOrientationAlignedQualifyingNeighbor(
         IWorldAccessor world,
         BlockPos pos,
         Block aqueductBlock,
@@ -60,8 +59,8 @@ internal static class ArchimedesRelayCandidateRules
             return false;
         }
 
-        return IsSameFamilyWaterOutsideAqueduct(world, pos, first, candidateFamilyId, manager) ||
-               IsSameFamilyWaterOutsideAqueduct(world, pos, second, candidateFamilyId, manager);
+        return IsQualifyingAlignedNeighbor(world, pos, first, candidateFamilyId, manager) ||
+               IsQualifyingAlignedNeighbor(world, pos, second, candidateFamilyId, manager);
     }
 
     private static bool TryGetOrientationAlignedFacings(Block aqueductBlock, out BlockFacing first, out BlockFacing second)
@@ -98,10 +97,13 @@ internal static class ArchimedesRelayCandidateRules
     }
 
     /// <summary>
-    /// In-aqueduct: an orientation-aligned neighbor qualifies if it is a fully empty cell (solid and fluid air)
-    /// or solid air with liquid matching the candidate intake family.
+    /// In-aqueduct: an orientation-aligned neighbor qualifies if it is one of:
+    ///   1. A fully empty cell (solid and fluid air) - aqueduct opens onto open air.
+    ///   2. Solid air with liquid matching the candidate intake family - aqueduct opens onto a same-family pool.
+    ///   3. Another aqueduct cell whose fluid layer is same-family managed water - propagation along a continuous pipe.
+    /// In all cases, the barrier between the candidate cell and the neighbor must allow liquid transfer.
     /// </summary>
-    private static bool IsSameFamilyWaterOutsideAqueduct(
+    private static bool IsQualifyingAlignedNeighbor(
         IWorldAccessor world,
         BlockPos origin,
         BlockFacing facing,
@@ -112,19 +114,31 @@ internal static class ArchimedesRelayCandidateRules
         IBlockAccessor accessor = world.BlockAccessor;
         Block neighborSolid = accessor.GetBlock(neighborPos);
         Block neighborFluid = accessor.GetBlock(neighborPos, BlockLayersAccess.Fluid);
+
+        bool qualifies = false;
         if (neighborSolid.Id == 0 && neighborFluid.Id == 0)
         {
-            return true;
+            qualifies = true;
         }
-
-        if (neighborSolid.Id == 0 &&
+        else if (neighborSolid.Id == 0 &&
             manager.TryResolveIntakeWaterFamily(neighborFluid, out string neighborFamilyId) &&
             string.Equals(neighborFamilyId, candidateFamilyId, StringComparison.Ordinal))
         {
-            return true;
+            qualifies = true;
+        }
+        else if (IsHardcoreWaterAqueduct(neighborSolid) &&
+            manager.TryResolveManagedWaterFamily(neighborFluid, out string aqueductNeighborFamilyId) &&
+            string.Equals(aqueductNeighborFamilyId, candidateFamilyId, StringComparison.Ordinal))
+        {
+            qualifies = true;
         }
 
-        return false;
+        if (!qualifies)
+        {
+            return false;
+        }
+
+        return ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(world, origin, neighborPos);
     }
 
     private static bool HasHorizontalManagedSameFamilyNeighborOrWhitelist(
@@ -159,7 +173,12 @@ internal static class ArchimedesRelayCandidateRules
                 continue;
             }
 
-            if (string.Equals(neighborFamilyId, candidateFamilyId, StringComparison.Ordinal))
+            if (!string.Equals(neighborFamilyId, candidateFamilyId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(world, pos, neighborPos))
             {
                 return true;
             }

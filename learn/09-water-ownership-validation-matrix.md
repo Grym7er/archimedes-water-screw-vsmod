@@ -4,7 +4,7 @@ This matrix validates the unified (non-legacy) water ownership architecture:
 
 - strict first-touch vanilla locking,
 - barrier-passability-based touching (blocked liquid interfaces are non-touching),
-- deterministic claim-domain arbitration,
+- territorial first-claim ownership (sticky until drained; lowest controller id breaks same-tick contention),
 - provenance tracking,
 - conversion-intent queue processing.
 
@@ -29,8 +29,9 @@ This matrix validates the unified (non-legacy) water ownership architecture:
    - Expect pre-existing locked lake cells to remain unchanged before/after drain.
 
 4. Two controllers in shared component (same family)
-   - Expect deterministic single-writer claim behavior.
+   - Expect deterministic single-writer claim behavior: whichever controller claims a cell first retains it until it drains.
    - Expect no ownership flip-flop between controllers over repeated ticks.
+   - On simultaneous same-tick claims, expect the lowest-ordinal controller id to win.
 
 5. Two controllers different families nearby
    - Expect no cross-family claim assignment.
