@@ -28,6 +28,32 @@ public static class ArchimedesRelayAdjacency
     }
 
     /// <summary>
+    /// True when the cell under <paramref name="relayPos"/> is a non-water block that can physically
+    /// support a relay cell above it. Mirrors the "solid-or-tallgrass, not water" rule used by the
+    /// whitelist acceptance path so every non-aqueduct relay-candidate branch shares the same
+    /// "no mid-air relays" invariant.
+    /// </summary>
+    public static bool HasStandableSupportBelow(IWorldAccessor world, BlockPos relayPos)
+    {
+        if (IsRelayBelowBlockedByWater(world, relayPos))
+        {
+            return false;
+        }
+
+        IBlockAccessor accessor = world.BlockAccessor;
+        Block belowSolid = accessor.GetBlock(relayPos.DownCopy());
+        if (belowSolid.Id != 0)
+        {
+            return true;
+        }
+
+        AssetLocation? belowCode = belowSolid.Code;
+        return belowCode != null
+            && string.Equals(belowCode.Domain, "game", StringComparison.Ordinal)
+            && belowCode.Path.StartsWith("tallgrass-", StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Aqueduct-branch variant of <see cref="IsRelayBelowBlockedByWater"/>. Returns false (not blocked)
     /// only when the cell directly below is itself an HCW aqueduct carrying same-family managed water,
     /// i.e. a legitimate vertical cascade. Anything else (vanilla water, cross-family managed water,
@@ -63,22 +89,12 @@ public static class ArchimedesRelayAdjacency
 
     public static bool IsRelaySupportAndAdjacentWhitelistSatisfied(IWorldAccessor world, BlockPos relayPos)
     {
+        if (!HasStandableSupportBelow(world, relayPos))
+        {
+            return false;
+        }
+
         IBlockAccessor accessor = world.BlockAccessor;
-        if (IsRelayBelowBlockedByWater(world, relayPos))
-        {
-            return false;
-        }
-
-        Block belowSolid = accessor.GetBlock(relayPos.DownCopy());
-        AssetLocation? belowCode = belowSolid.Code;
-        bool belowIsTallgrass = belowCode != null &&
-                                string.Equals(belowCode.Domain, "game", StringComparison.Ordinal) &&
-                                belowCode.Path.StartsWith("tallgrass-", StringComparison.Ordinal);
-        if (belowSolid.Id == 0 && !belowIsTallgrass)
-        {
-            return false;
-        }
-
         foreach (BlockFacing face in BlockFacing.HORIZONTALS)
         {
             BlockPos adjacentPos = relayPos.AddCopy(face);

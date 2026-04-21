@@ -185,7 +185,7 @@ internal static class ArchimedesRelayCandidateRules
             return true;
         }
 
-        if (ArchimedesRelayAdjacency.IsRelayBelowBlockedByWater(world, pos))
+        if (!ArchimedesRelayAdjacency.HasStandableSupportBelow(world, pos))
         {
             return false;
         }
