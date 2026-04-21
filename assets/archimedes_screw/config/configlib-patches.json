@@ -106,7 +106,7 @@
         "ingui": "archimedes_screw:config-max-blocks-per-step",
         "weight": 3.0,
         "comment": "Archimedes sources removed per fast tick when draining (farthest from the screw first). Use 1 for one source every fastTickMs.",
-        "default": 1,
+        "default": 4,
         "range": {
           "min": 1,
           "max": 128,
