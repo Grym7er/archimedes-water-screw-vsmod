@@ -285,8 +285,15 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     public void NotifyManagedWaterRemoved(BlockPos pos)
     {
         long key = ArchimedesPosKey.Pack(pos);
-        ownedPositions.Remove(key);
-        RemoveRelayOwnership(key);
+        bool hadLocalOwned = ownedPositions.Remove(key);
+        bool hadLocalRelay = relayOwnedPositions.Remove(key);
+        relayPromotedAtMsByKey.Remove(key);
+
+        if (waterManager != null && (hadLocalOwned || hadLocalRelay))
+        {
+            waterManager.ReleaseOwnedSourceForController(ControllerId, pos);
+        }
+
         MarkDirty();
         Log("Tracked Archimedes source removed externally at {0}; ownership updated", pos);
     }
@@ -1085,12 +1092,22 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             ReconcileOwnedPositionsFromManager();
         }
 
+        // Post-load grace (12s) is a defence against fluid settling on freshly-loaded *active* networks.
+        // Pure-unpowered controllers (empty FailureReason) have no active fluid dynamics to protect;
+        // bypassing the grace here prevents derelict screws from leaving stale owned sources in the world
+        // when their chunk unloads before the 12s grace expires.
+        bool bypassGraceForPureUnpowered = !forceDrain
+            && string.IsNullOrWhiteSpace(evaluation.FailureReason);
+
         int removed = DrainUnsupportedSources(
             Array.Empty<ArchimedesOutletState>(),
             EmptyKeySet,
             evaluation.FailureReason,
-            ignoreGrace: forceDrain);
-        int orphanRemoved = CleanupUnownedManagedSourcesForControllerState(ignoreGrace: forceDrain);
+            ignoreGrace: forceDrain || bypassGraceForPureUnpowered);
+        // Orphan managed-water cleanup must follow the same bypass rule; otherwise post-load grace
+        // blocks unowned-managed removals for the same 12s window, leaving orphan fluid in the world.
+        int orphanRemoved = CleanupUnownedManagedSourcesForControllerState(
+            ignoreGrace: forceDrain || bypassGraceForPureUnpowered);
         ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
             ? ArchimedesScrewControllerSchedule.HighCadence
             : ArchimedesScrewControllerSchedule.LowCadence;
@@ -1368,6 +1385,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return 0;
         }
 
+        ReconcileOwnedPositionsFromManager();
+        ReconcileRelayOwnedPositionsFromManager();
+
         List<BlockPos> toRelease = new();
         foreach (BlockPos pos in ownedPositions.Values)
         {
@@ -1421,11 +1441,25 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             BlockPos pos = releaseCandidates[i];
             long key = ArchimedesPosKey.Pack(pos);
+            ReleaseOutcome outcome = waterManager.ReleaseOwnedSourceForController(ControllerId, pos);
+
             ownedPositions.Remove(key);
             RemoveRelayOwnership(key);
+
+            if (outcome == ReleaseOutcome.OwnedByOtherController)
+            {
+                ArchimedesPerf.AddCount("controller.drainUnsupported.ownerDrift");
+                continue;
+            }
+
+            if (outcome == ReleaseOutcome.NotOwned)
+            {
+                ArchimedesPerf.AddCount("controller.drainUnsupported.notOwned");
+                continue;
+            }
+
             NoteLocalSourceCooldown(key);
             waterManager.MarkDrainQuarantine(pos);
-            waterManager.ReleaseOwnedSourceForController(ControllerId, pos);
             ownershipChurnTotal++;
         }
 
@@ -1499,15 +1533,41 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return 0;
         }
 
+        // Orphan managed water is connected to the same body the controller owned/owns.
+        // Use every owned position plus the last/current seed as BFS anchors so the cleanup
+        // actually reaches into the body of fluid. Previously only [lastSeedPos, Pos] were
+        // used; Pos (the controller block) is never water, and lastSeedPos was sometimes
+        // null or stranded, so cleanup BFS returned 0 cells even when the body had hundreds
+        // of orphans (verified via seize-summary vs orphan-cleanup-summary mismatch).
         List<BlockPos> anchors = new();
-        if (lastSeedPos != null)
+        HashSet<long> anchorSeen = new();
+        void AddAnchor(BlockPos p)
         {
-            anchors.Add(lastSeedPos.Copy());
+            long k = ArchimedesPosKey.Pack(p);
+            if (anchorSeen.Add(k))
+            {
+                anchors.Add(p.Copy());
+            }
         }
 
-        anchors.Add(Pos.Copy());
+        if (lastSeedPos != null)
+        {
+            AddAnchor(lastSeedPos);
+        }
+
+        foreach (BlockPos owned in ownedPositions.Values)
+        {
+            AddAnchor(owned);
+        }
+
+        if (anchors.Count == 0)
+        {
+            anchors.Add(Pos.Copy());
+        }
+
         int budget = Math.Max(1, waterConfig.MaxBlocksPerStep * (ignoreGrace ? 8 : 2));
-        return waterManager.CleanupUnownedManagedSourcesAroundAnchors(anchors, budget);
+        int removed = waterManager.CleanupUnownedManagedSourcesAroundAnchors(anchors, budget);
+        return removed;
     }
 
     private void ReconcileOwnedPositionsFromManager()
@@ -1534,6 +1594,35 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             UpdateSnapshot();
             Log("Reconciled {0} manager-owned source(s) into local ownership before force-drain", added);
+        }
+    }
+
+    private void ReconcileRelayOwnedPositionsFromManager()
+    {
+        if (waterManager == null)
+        {
+            return;
+        }
+
+        int added = 0;
+        foreach (BlockPos pos in waterManager.GetRelayOwnedPositionsForController(ControllerId))
+        {
+            long key = ArchimedesPosKey.Pack(pos);
+            if (relayOwnedPositions.ContainsKey(key))
+            {
+                continue;
+            }
+
+            relayOwnedPositions[key] = pos.Copy();
+            // 0 marks "legacy / unknown promotion time" - protected from age-based trim, same as existing restore path.
+            relayPromotedAtMsByKey[key] = 0L;
+            added++;
+        }
+
+        if (added > 0)
+        {
+            MarkDirty();
+            Log("Reconciled {0} manager-owned relay source(s) into local tracking", added);
         }
     }
 

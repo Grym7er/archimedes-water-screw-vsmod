@@ -18,7 +18,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private const string SaveKeySourceProvenance = "archimedes_screw/sourceprovenance";
     private const string SaveKeyLockedVanilla = "archimedes_screw/lockedvanilla";
 
-    private const int MaxBfsVisited = 4096;
+    private const int MaxBfsVisited = 16384;
     private const int UnownedCleanupRetryCooldownMs = 3000;
     private const int ManagedAdoptionCooldownAfterReleaseMs = 2500;
     private const int DrainQuarantineMs = 1500;
@@ -1083,7 +1083,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return true;
     }
 
-    public void ReleaseRelaySourceForController(string controllerId, BlockPos pos)
+    public ReleaseOutcome ReleaseRelaySourceForController(string controllerId, BlockPos pos)
     {
         long key = ArchimedesPosKey.Pack(pos);
         if (controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? relayKeys) &&
@@ -1094,7 +1094,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             relayOwnerByPos.Remove(key);
         }
 
-        ReleaseOwnedSourceForController(controllerId, pos);
+        return ReleaseOwnedSourceForController(controllerId, pos);
     }
 
     /// <summary>
@@ -1178,18 +1178,25 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return true;
     }
 
-    public void ReleaseSourceOwner(string ownerId, BlockPos pos)
+    public ReleaseOutcome ReleaseSourceOwner(string ownerId, BlockPos pos)
     {
         long key = ArchimedesPosKey.Pack(pos);
         if (!sourceOwnerByPos.TryGetValue(key, out string? owner))
         {
-            RemoveOrphanedManagedSource(pos, key);
-            return;
+            Block orphanFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+            if (!IsArchimedesSourceBlock(orphanFluid))
+            {
+                return ReleaseOutcome.NotOwned;
+            }
+
+            SuppressRemovalNotification(key);
+            RemoveFluidAndNotifyNeighbours(pos);
+            return ReleaseOutcome.OrphanRemoved;
         }
 
         if (!string.Equals(owner, ownerId, StringComparison.Ordinal))
         {
-            return;
+            return ReleaseOutcome.OwnedByOtherController;
         }
 
         sourceOwnerByPos.Remove(key);
@@ -1205,22 +1212,22 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         RemoveOwnedPosFromSnapshot(ownerId, pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        if (!IsArchimedesWaterBlock(fluidBlock))
+        if (IsArchimedesWaterBlock(fluidBlock))
         {
-            return;
+            SuppressRemovalNotification(key);
+            RemoveFluidAndNotifyNeighbours(pos);
         }
 
-        SuppressRemovalNotification(key);
-        RemoveFluidAndNotifyNeighbours(pos);
+        return ReleaseOutcome.Released;
     }
 
     /// <summary>
     /// Intent-revealing wrapper for controller-driven source release.
     /// Preserves existing release semantics from <see cref="ReleaseSourceOwner"/>.
     /// </summary>
-    public void ReleaseOwnedSourceForController(string controllerId, BlockPos pos)
+    public ReleaseOutcome ReleaseOwnedSourceForController(string controllerId, BlockPos pos)
     {
-        ReleaseSourceOwner(controllerId, pos);
+        return ReleaseSourceOwner(controllerId, pos);
     }
 
     public int CleanupUnownedManagedSourcesAroundAnchors(IReadOnlyCollection<BlockPos> anchors, int maxRemovals)
@@ -1241,6 +1248,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
 
             CollectConnectedManagedWater(anchor, out Dictionary<long, BlockPos> connectedWater);
+
             foreach ((long key, BlockPos pos) in connectedWater)
             {
                 if (removed >= budget || !seenKeys.Add(key))
@@ -1510,18 +1518,13 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
             else if (adoptManagedSelfSustaining &&
                      !string.IsNullOrWhiteSpace(ownerHintControllerId) &&
-                     isUnownedManagedSelfSustaining)
+                     isUnownedManagedSelfSustaining &&
+                     !IsManagedAdoptionCoolingDown(pkey, out _))
             {
-                if (IsManagedAdoptionCoolingDown(pkey, out _))
+                // Unowned archimedes still blocks (not vanilla water-*) need ownership so drain can release them.
+                if (EnsureSourceOwned(ownerHintControllerId, posScratch, familyId))
                 {
-                }
-                else
-                {
-                    // Unowned archimedes still blocks (not vanilla water-*) need ownership so drain can release them.
-                    if (EnsureSourceOwned(ownerHintControllerId, posScratch, familyId))
-                    {
-                        claimed = true;
-                    }
+                    claimed = true;
                 }
             }
 
@@ -1906,18 +1909,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return true;
     }
 
-    private void RemoveOrphanedManagedSource(BlockPos pos, long key)
-    {
-        Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        if (!IsArchimedesSourceBlock(fluidBlock))
-        {
-            return;
-        }
-
-        SuppressRemovalNotification(key);
-        RemoveFluidAndNotifyNeighbours(pos);
-    }
-
     private T? LoadSerialized<T>(string key)
     {
         byte[] data = api.WorldManager.SaveGame.GetData(key);
@@ -2225,3 +2216,22 @@ public readonly record struct ConnectedManagedWaterResult(
     bool IsTruncated,
     int VisitedManagedCount
 );
+
+/// <summary>
+/// Precise outcome of a source release attempt so callers can distinguish
+/// genuine releases, orphan cleanups, and drift (cell owned by a different controller).
+/// </summary>
+public enum ReleaseOutcome
+{
+    /// <summary>The cell was owned by the requesting controller; tracking cleared and managed fluid removed.</summary>
+    Released,
+
+    /// <summary>No owner was recorded but a managed source block existed; fluid removed directly.</summary>
+    OrphanRemoved,
+
+    /// <summary>sourceOwnerByPos[key] belongs to a different controller; no side effects.</summary>
+    OwnedByOtherController,
+
+    /// <summary>No owner recorded and no managed fluid present; nothing to do.</summary>
+    NotOwned
+}
