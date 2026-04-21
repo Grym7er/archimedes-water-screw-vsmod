@@ -804,15 +804,26 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 }
 
                 nextPos.Set(nextX, nextY, nextZ);
-                if (!CanLiquidsTouch(currentPos, nextPos))
-                {
-                    continue;
-                }
 
                 Block fluidBlock = api.World.BlockAccessor.GetBlock(nextPos, BlockLayersAccess.Fluid);
                 if (!IsArchimedesWaterBlock(fluidBlock))
                 {
                     continue;
+                }
+
+                if (!CanLiquidsTouch(currentPos, nextPos))
+                {
+                    // HCW aqueducts present a solid top/bottom face to the vanilla barrier API, but HCW itself
+                    // propagates water vertically between stacked aqueducts. Trust HCW's routing: if either
+                    // endpoint is an aqueduct and the destination already holds managed water, the BFS may cross.
+                    Block fromSolidBlk = api.World.BlockAccessor.GetBlock(currentPos);
+                    Block toSolidBlk = api.World.BlockAccessor.GetBlock(nextPos);
+                    bool aqueductBoundary = ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(fromSolidBlk) ||
+                                            ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(toSolidBlk);
+                    if (!aqueductBoundary)
+                    {
+                        continue;
+                    }
                 }
 
                 visited.Add(nextKey);

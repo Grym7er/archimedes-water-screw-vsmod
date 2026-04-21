@@ -95,10 +95,13 @@ Then pump logic executes:
    - `ConvertAdjacentVanillaSourcesIteratively(...)`
 4. Relay maintenance:
    - `CreateRelaySources(...)` promotes eligible managed-water cells to sources.
-   - Inside an aqueduct, a candidate qualifies if an orientation-aligned neighbor is either:
-     - fully empty (air solid + air fluid) — i.e. an open pipe end, or
-     - solid air with liquid of the candidate's family, or
-     - another aqueduct cell whose fluid layer is same-family managed water (propagation along the pipe).
+   - Inside an aqueduct, a candidate qualifies if it has either an orientation-aligned horizontal qualifier OR a vertical (UP) aqueduct feed:
+     - **Horizontal qualifier** — an orientation-aligned neighbor is one of:
+       - fully empty (air solid + air fluid) — i.e. an open pipe end, or
+       - solid air with liquid of the candidate's family, or
+       - another aqueduct cell whose fluid layer is same-family managed water (propagation along the pipe).
+     - **Vertical UP-feed qualifier** — the cell directly above is another HCW aqueduct holding same-family managed water with a passable liquid barrier between the two cells (HCW step-down cascades).
+   - Aqueduct branch water-below guard: the cell below blocks promotion *unless* it is itself an HCW aqueduct carrying same-family managed water (legitimate cascade). Vanilla water, cross-family managed water, or natural lake water below still blocks. The non-aqueduct branch keeps the strict water-below guard.
    - Outside an aqueduct, the candidate needs a same-family managed horizontal neighbor (with passable barrier) OR the whitelisted flat terrain layout. Either branch additionally requires the block directly below the candidate to be dry (not water).
    - `TrimRelaySourcesToCap(...)` releases excess relays, preferring the newest promotions (age-based trim).
    - Ownership is stored in a manager-authoritative relay index (`relayOwnerByPos`) that survives BE chunk unload; BEs write-through via `AssignRelaySourceForController` / `ReleaseRelaySourceForController`.

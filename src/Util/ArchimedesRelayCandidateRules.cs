@@ -10,26 +10,29 @@ internal static class ArchimedesRelayCandidateRules
     {
         IBlockAccessor accessor = world.BlockAccessor;
         Block candidateFluid = accessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        if (!manager.IsArchimedesRelayFlowCandidate(candidateFluid))
+        bool flowCandidate = manager.IsArchimedesRelayFlowCandidate(candidateFluid);
+        Block solid = accessor.GetBlock(pos);
+        bool isAqueduct = IsHardcoreWaterAqueduct(solid);
+
+        if (!flowCandidate)
         {
             return false;
         }
 
-        Block solid = accessor.GetBlock(pos);
-        bool isAqueduct = IsHardcoreWaterAqueduct(solid);
         if (isAqueduct)
         {
-            if (ArchimedesRelayAdjacency.IsRelayBelowBlockedByWater(world, pos))
-            {
-                return false;
-            }
-
             if (!manager.TryResolveIntakeWaterFamily(candidateFluid, out string candidateFamilyId))
             {
                 return false;
             }
 
-            if (!HasOrientationAlignedQualifyingNeighbor(world, pos, solid, candidateFamilyId, manager))
+            if (ArchimedesRelayAdjacency.IsRelayBelowBlockedByNonAqueductWater(world, pos, candidateFamilyId, manager))
+            {
+                return false;
+            }
+
+            if (!HasOrientationAlignedQualifyingNeighbor(world, pos, solid, candidateFamilyId, manager) &&
+                !HasAqueductFeedFromAbove(world, pos, candidateFamilyId, manager))
             {
                 return false;
             }
@@ -61,6 +64,36 @@ internal static class ArchimedesRelayCandidateRules
 
         return IsQualifyingAlignedNeighbor(world, pos, first, candidateFamilyId, manager) ||
                IsQualifyingAlignedNeighbor(world, pos, second, candidateFamilyId, manager);
+    }
+
+    /// <summary>
+    /// In-aqueduct vertical cascade: an aqueduct candidate qualifies if the cell directly above is
+    /// another aqueduct holding same-family managed water and the barrier between the two cells
+    /// allows liquid transfer. Mirrors the along-the-pipe rule on the vertical axis so HCW step-down
+    /// cascades can propagate ownership downward.
+    /// </summary>
+    private static bool HasAqueductFeedFromAbove(
+        IWorldAccessor world,
+        BlockPos pos,
+        string candidateFamilyId,
+        ArchimedesWaterNetworkManager manager)
+    {
+        BlockPos above = pos.UpCopy();
+        IBlockAccessor accessor = world.BlockAccessor;
+        Block aboveSolid = accessor.GetBlock(above);
+        if (!IsHardcoreWaterAqueduct(aboveSolid))
+        {
+            return false;
+        }
+
+        Block aboveFluid = accessor.GetBlock(above, BlockLayersAccess.Fluid);
+        if (!manager.TryResolveManagedWaterFamily(aboveFluid, out string aboveFamilyId) ||
+            !string.Equals(aboveFamilyId, candidateFamilyId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(world, pos, above);
     }
 
     private static bool TryGetOrientationAlignedFacings(Block aqueductBlock, out BlockFacing first, out BlockFacing second)

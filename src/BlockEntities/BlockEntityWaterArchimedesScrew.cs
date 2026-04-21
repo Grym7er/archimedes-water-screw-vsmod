@@ -1139,7 +1139,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 nextPos.Set(nextX, nextY, nextZ);
                 if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(Api!.World, currentPos, nextPos))
                 {
-                    continue;
+                    // HCW aqueducts present a solid top/bottom face to the vanilla barrier API, but HCW itself
+                    // propagates water across stacked aqueducts. Mirror the override used in the manager's BFS
+                    // so the distance map reaches the full cascade and downstream cells can be promoted.
+                    Block fromSolid = Api!.World.BlockAccessor.GetBlock(currentPos);
+                    Block toSolid = Api!.World.BlockAccessor.GetBlock(nextPos);
+                    bool aqueductBoundary = ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(fromSolid) ||
+                                            ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(toSolid);
+                    if (!aqueductBoundary)
+                    {
+                        continue;
+                    }
                 }
 
                 distanceByKey[nextKey] = currentDistance + 1;

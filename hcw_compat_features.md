@@ -186,6 +186,8 @@ This simpler loop is easier to implement and should satisfy "water leaves aquedu
 
 **Defensive handshake (active):** `ArchimedesWaterBlockHelper.NotifyManagerOnRemoval` detects the HCW refill pattern where an aqueduct cell flips from same-family managed water to same-family vanilla water. In that case the manager enqueues a reconversion intent with the prior owner supplied as `ownerHintControllerId`, so the cell is reclaimed by its original controller on the next intent pass rather than entering the generic relay-promotion queue. Combined with the 2x aqueduct quarantine TTL this eliminates the ownership-loss flicker observed during HCW source-pulse cycles without requiring any Harmony patches.
 
+**Vertical aqueduct cascades (active):** Relay promotion now propagates downward through stacked HCW aqueducts. An aqueduct candidate qualifies if either an orientation-aligned horizontal neighbor satisfies the existing rules (open end / same-family pool / same-family aqueduct along the pipe) **or** the cell directly above is another HCW aqueduct carrying same-family managed water with a passable liquid barrier between the two cells. The aqueduct-branch water-below guard (`ArchimedesRelayAdjacency.IsRelayBelowBlockedByNonAqueductWater`) is correspondingly relaxed: water below only blocks when it is **not** inside a same-family aqueduct, so cascades stay stable rather than collapsing as soon as the lower cell fills. Both relaxations are gated on family equality and barrier passability, so an aqueduct sitting over a natural lake (or a cross-family / vanilla-water flicker during an HCW refill pulse) still rejects exactly as before.
+
 ---
 
 ## 7) Save/Load Continuity

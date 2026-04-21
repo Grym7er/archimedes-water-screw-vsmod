@@ -1,3 +1,4 @@
+using System;
 using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 
@@ -24,6 +25,40 @@ public static class ArchimedesRelayAdjacency
 
         Block belowSolid = accessor.GetBlock(belowPos);
         return IsWaterBlock(belowSolid);
+    }
+
+    /// <summary>
+    /// Aqueduct-branch variant of <see cref="IsRelayBelowBlockedByWater"/>. Returns false (not blocked)
+    /// only when the cell directly below is itself an HCW aqueduct carrying same-family managed water,
+    /// i.e. a legitimate vertical cascade. Anything else (vanilla water, cross-family managed water,
+    /// natural lake, unmanaged fluid) keeps blocking exactly like the strict guard.
+    /// </summary>
+    public static bool IsRelayBelowBlockedByNonAqueductWater(
+        IWorldAccessor world,
+        BlockPos relayPos,
+        string candidateFamilyId,
+        ArchimedesWaterNetworkManager manager)
+    {
+        if (!IsRelayBelowBlockedByWater(world, relayPos))
+        {
+            return false;
+        }
+
+        BlockPos belowPos = relayPos.DownCopy();
+        Block belowSolid = world.BlockAccessor.GetBlock(belowPos);
+        if (!ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(belowSolid))
+        {
+            return true;
+        }
+
+        Block belowFluid = world.BlockAccessor.GetBlock(belowPos, BlockLayersAccess.Fluid);
+        if (!manager.TryResolveManagedWaterFamily(belowFluid, out string belowFamilyId) ||
+            !string.Equals(belowFamilyId, candidateFamilyId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     public static bool IsRelaySupportAndAdjacentWhitelistSatisfied(IWorldAccessor world, BlockPos relayPos)
