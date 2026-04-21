@@ -37,9 +37,18 @@ internal static class ArchimedesRelayCandidateRules
                 return false;
             }
         }
-        else if (!HasHorizontalManagedSameFamilyNeighborOrWhitelist(world, pos, candidateFluid, manager))
+        else
         {
-            return false;
+            if (ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(
+                    accessor.GetBlock(pos.DownCopy())))
+            {
+                return false;
+            }
+
+            if (!HasHorizontalManagedSameFamilyNeighborOrWhitelist(world, pos, candidateFluid, manager))
+            {
+                return false;
+            }
         }
 
         return ArchimedesFluidHostValidator.IsFluidHostCellCompatible(world, pos);
