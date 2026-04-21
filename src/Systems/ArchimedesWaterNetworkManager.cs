@@ -549,7 +549,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     public bool IsArchimedesRelayFlowCandidate(Block block)
     {
         return IsArchimedesWaterBlock(block) &&
-               !string.Equals(block.Variant?["flow"], "still", StringComparison.Ordinal) &&
                string.Equals(block.Variant?["height"], "6", StringComparison.Ordinal);
     }
 

@@ -49,6 +49,15 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
     public ArchimedesWaterNetworkManager? WaterManager { get; private set; }
 
+    /// <summary>Client: whether the last water debug snapshot had <c>Enabled=true</c>.</summary>
+    public bool IsWaterDebugOverlayEnabled => waterDebugOverlay?.IsOverlayEnabled ?? false;
+
+    /// <summary>Client-only: appendix text for Archimedes fluid tooltips when water debug overlay is on.</summary>
+    public string? TryBuildWaterDebugTooltipAppendix(BlockPos pos, Block fluidBlock)
+    {
+        return waterDebugOverlay?.BuildWaterDebugTooltipAppendix(pos, fluidBlock);
+    }
+
     /// <summary>
     /// Runs after Config Lib (0.01) so Start/early hooks see consistent ordering when relevant.
     /// </summary>
@@ -155,7 +164,10 @@ public sealed class ArchimedesScrewModSystem : ModSystem
         sapi = api;
         serverChannel = api.Network
             .RegisterChannel(NetworkChannelName)
-            .RegisterMessageType<ArchimedesWaterDebugSnapshotPacket>();
+            .RegisterMessageType<ArchimedesWaterDebugSnapshotPacket>()
+            .RegisterMessageType<WaterDebugTooltipQueryPacket>()
+            .RegisterMessageType<WaterDebugTooltipResponsePacket>();
+        serverChannel.SetMessageHandler<WaterDebugTooltipQueryPacket>(OnWaterDebugTooltipQuery);
 
         WaterManager = new ArchimedesWaterNetworkManager(api, Config);
         WaterManager.StartCentralWaterTick();
@@ -178,13 +190,19 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     public override void StartClientSide(ICoreClientAPI api)
     {
         capi = api;
-        waterDebugOverlay = new ArchimedesWaterDebugOverlay(api);
+        waterDebugOverlay = new ArchimedesWaterDebugOverlay(api, NetworkChannelName);
         clientChannel = api.Network
             .RegisterChannel(NetworkChannelName)
-            .RegisterMessageType<ArchimedesWaterDebugSnapshotPacket>();
+            .RegisterMessageType<ArchimedesWaterDebugSnapshotPacket>()
+            .RegisterMessageType<WaterDebugTooltipQueryPacket>()
+            .RegisterMessageType<WaterDebugTooltipResponsePacket>();
         clientChannel.SetMessageHandler<ArchimedesWaterDebugSnapshotPacket>(packet =>
         {
             waterDebugOverlay?.ApplySnapshot(packet);
+        });
+        clientChannel.SetMessageHandler<WaterDebugTooltipResponsePacket>(packet =>
+        {
+            waterDebugOverlay?.ApplyTooltipResponse(packet);
         });
     }
 
@@ -412,6 +430,43 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             .EndSubCommand();
     }
 
+    private void OnWaterDebugTooltipQuery(IServerPlayer fromPlayer, WaterDebugTooltipQueryPacket packet)
+    {
+        if (!waterDebugEnabled || WaterManager == null || serverChannel == null)
+        {
+            return;
+        }
+
+        if (fromPlayer.Entity?.Pos == null)
+        {
+            return;
+        }
+
+        BlockPos pos = new(packet.X, packet.Y, packet.Z);
+        BlockPos playerPos = fromPlayer.Entity.Pos.AsBlockPos;
+        int dx = pos.X - playerPos.X;
+        int dy = pos.Y - playerPos.Y;
+        int dz = pos.Z - playerPos.Z;
+        if (dx * dx + dy * dy + dz * dz > (WaterDebugRadius + 8) * (WaterDebugRadius + 8))
+        {
+            return;
+        }
+
+        ArchimedesWaterDebugTooltipFlags flags = WaterManager.CollectWaterDebugTooltipFlags(pos);
+        var response = new WaterDebugTooltipResponsePacket
+        {
+            X = pos.X,
+            Y = pos.Y,
+            Z = pos.Z,
+            ManagedWaterBlock = flags.ManagedWaterBlock,
+            Height7SourceBlock = flags.Height7SourceBlock,
+            OwnedManagedSource = flags.OwnedManagedSource,
+            RelayOwned = flags.RelayOwned,
+            RelayCandidate = flags.RelayCandidate
+        };
+        serverChannel.SendPacket(response, fromPlayer);
+    }
+
     private void EnsureWaterDebugTickListener(ICoreServerAPI api)
     {
         if (waterDebugTickListenerId != 0)
@@ -454,7 +509,8 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     Z = source.Pos.Z,
                     IsOwned = source.IsOwned,
                     OwnerId = source.OwnerId,
-                    IsOwnershipConsistent = source.IsOwnershipConsistent
+                    IsOwnershipConsistent = source.IsOwnershipConsistent,
+                    IsRelay = WaterManager.IsRelayOwnedPosition(source.Pos)
                 });
             }
 

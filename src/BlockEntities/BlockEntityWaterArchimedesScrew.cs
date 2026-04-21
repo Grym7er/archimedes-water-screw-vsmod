@@ -298,6 +298,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return ownedPositions.ContainsKey(ArchimedesPosKey.Pack(pos));
     }
 
+    internal bool IsRelayOwnedSource(BlockPos pos)
+    {
+        return relayOwnedPositions.ContainsKey(ArchimedesPosKey.Pack(pos));
+    }
+
     public void ClearOwnedStateAfterPurge()
     {
         ownedPositions.Clear();
@@ -1245,6 +1250,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
+        const int maxSampleCount = 5;
         int removedInvalidKeys = 0;
         List<string> invalidSamples = new();
         foreach (long key in relayOwnedPositions.Keys.ToList())
@@ -1256,6 +1262,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             if (!stillOwned)
             {
                 relayOwnedPositions.Remove(key);
+                removedInvalidKeys++;
+                if (invalidSamples.Count < maxSampleCount)
+                {
+                    invalidSamples.Add(ArchimedesPosKey.ToDebugString(key));
+                }
             }
         }
 

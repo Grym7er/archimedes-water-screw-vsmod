@@ -6,6 +6,18 @@ namespace ArchimedesScrew;
 
 internal static class ArchimedesWaterBlockHelper
 {
+    internal static string AppendWaterDebugTooltip(IWorldAccessor world, BlockPos pos, Block fluidBlock, string baseInfo)
+    {
+        if (world.Side != EnumAppSide.Client)
+        {
+            return baseInfo;
+        }
+
+        ArchimedesScrewModSystem? sys = world.Api.ModLoader.GetModSystem<ArchimedesScrewModSystem>();
+        string? appendix = sys?.TryBuildWaterDebugTooltipAppendix(pos, fluidBlock);
+        return appendix == null ? baseInfo : baseInfo + appendix;
+    }
+
     public static void NotifyManagerOnRemoval(IWorldAccessor world, BlockPos pos, Block removedBlock)
     {
         if (world.Side != EnumAppSide.Server)
@@ -80,6 +92,12 @@ internal static class ArchimedesWaterBlockHelper
 
 public sealed class BlockArchimedesWaterStill : BlockWater
 {
+    public override string GetPlacedBlockInfo(IWorldAccessor world, BlockPos pos, IPlayer forPlayer)
+    {
+        string baseInfo = base.GetPlacedBlockInfo(world, pos, forPlayer) ?? string.Empty;
+        return ArchimedesWaterBlockHelper.AppendWaterDebugTooltip(world, pos, this, baseInfo);
+    }
+
     public override void OnNeighbourBlockChange(IWorldAccessor world, BlockPos pos, BlockPos neibpos)
     {
         base.OnNeighbourBlockChange(world, pos, neibpos);
@@ -95,6 +113,12 @@ public sealed class BlockArchimedesWaterStill : BlockWater
 
 public sealed class BlockArchimedesWaterFlowing : BlockWaterflowing
 {
+    public override string GetPlacedBlockInfo(IWorldAccessor world, BlockPos pos, IPlayer forPlayer)
+    {
+        string baseInfo = base.GetPlacedBlockInfo(world, pos, forPlayer) ?? string.Empty;
+        return ArchimedesWaterBlockHelper.AppendWaterDebugTooltip(world, pos, this, baseInfo);
+    }
+
     public override void OnNeighbourBlockChange(IWorldAccessor world, BlockPos pos, BlockPos neibpos)
     {
         base.OnNeighbourBlockChange(world, pos, neibpos);
@@ -110,6 +134,12 @@ public sealed class BlockArchimedesWaterFlowing : BlockWaterflowing
 
 public sealed class BlockArchimedesWaterfall : BlockWaterfall
 {
+    public override string GetPlacedBlockInfo(IWorldAccessor world, BlockPos pos, IPlayer forPlayer)
+    {
+        string baseInfo = base.GetPlacedBlockInfo(world, pos, forPlayer) ?? string.Empty;
+        return ArchimedesWaterBlockHelper.AppendWaterDebugTooltip(world, pos, this, baseInfo);
+    }
+
     public override void OnNeighbourBlockChange(IWorldAccessor world, BlockPos pos, BlockPos neibpos)
     {
         base.OnNeighbourBlockChange(world, pos, neibpos);
