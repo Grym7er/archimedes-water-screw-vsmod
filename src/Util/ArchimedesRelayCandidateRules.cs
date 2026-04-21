@@ -138,6 +138,11 @@ internal static class ArchimedesRelayCandidateRules
             return true;
         }
 
+        if (ArchimedesRelayAdjacency.IsRelayBelowBlockedByWater(world, pos))
+        {
+            return false;
+        }
+
         if (!manager.TryResolveManagedWaterFamily(candidateFluid, out string candidateFamilyId))
         {
             return false;

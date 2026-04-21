@@ -8,22 +8,33 @@ namespace ArchimedesScrew;
 /// </summary>
 public static class ArchimedesRelayAdjacency
 {
-    public static bool IsRelaySupportAndAdjacentWhitelistSatisfied(IWorldAccessor world, BlockPos relayPos)
+    /// <summary>
+    /// True when the cell under <paramref name="relayPos"/> has vanilla or managed water in fluid or solid layer
+    /// (same rule as relay whitelist support).
+    /// </summary>
+    public static bool IsRelayBelowBlockedByWater(IWorldAccessor world, BlockPos relayPos)
     {
         IBlockAccessor accessor = world.BlockAccessor;
         BlockPos belowPos = relayPos.DownCopy();
         Block belowFluid = accessor.GetBlock(belowPos, BlockLayersAccess.Fluid);
         if (IsWaterBlock(belowFluid))
         {
-            return false;
+            return true;
         }
 
         Block belowSolid = accessor.GetBlock(belowPos);
-        if (IsWaterBlock(belowSolid))
+        return IsWaterBlock(belowSolid);
+    }
+
+    public static bool IsRelaySupportAndAdjacentWhitelistSatisfied(IWorldAccessor world, BlockPos relayPos)
+    {
+        IBlockAccessor accessor = world.BlockAccessor;
+        if (IsRelayBelowBlockedByWater(world, relayPos))
         {
             return false;
         }
 
+        Block belowSolid = accessor.GetBlock(relayPos.DownCopy());
         AssetLocation? belowCode = belowSolid.Code;
         bool belowIsTallgrass = belowCode != null &&
                                 string.Equals(belowCode.Domain, "game", StringComparison.Ordinal) &&

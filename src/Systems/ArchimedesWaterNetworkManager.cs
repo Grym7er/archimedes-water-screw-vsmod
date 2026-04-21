@@ -14,6 +14,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private const string SaveKeyScrewBlocks = "archimedes_screw/screwblocks";
     private const string SaveKeyControllerPositions = "archimedes_screw/controllerpositions";
     private const string SaveKeyControllerOwned = "archimedes_screw/controllerowned";
+    private const string SaveKeyControllerRelayOwned = "archimedes_screw/controllerrelayowned";
     private const string SaveKeySourceProvenance = "archimedes_screw/sourceprovenance";
     private const string SaveKeyLockedVanilla = "archimedes_screw/lockedvanilla";
 
@@ -35,6 +36,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> loadedControllers = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<long, byte> suppressedRemovalNotifications = new();
     private readonly Dictionary<string, Block> managedBlockCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<long>> controllerRelaySourceKeys = new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> centralWaterTickControllers = new(StringComparer.Ordinal);
     private readonly List<string> centralWaterTickOrder = new();
@@ -283,6 +285,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         screwBlockKeys.Clear();
         controllerPosById.Clear();
         controllerOwnedById.Clear();
+        controllerRelaySourceKeys.Clear();
         sourceOwnerByPos.Clear();
         sourceProvenanceByPos.Clear();
         lockedVanillaFamilyByPos.Clear();
@@ -395,6 +398,27 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
         }
 
+        Dictionary<string, int[]>? relayOwnedSources = LoadSerialized<Dictionary<string, int[]>>(SaveKeyControllerRelayOwned);
+        if (relayOwnedSources != null)
+        {
+            foreach ((string cId, int[]? flatPositions) in relayOwnedSources)
+            {
+                if (flatPositions == null || flatPositions.Length == 0)
+                {
+                    controllerRelaySourceKeys[cId] = new HashSet<long>();
+                    continue;
+                }
+
+                HashSet<long> relayKeys = new();
+                foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatPositions))
+                {
+                    relayKeys.Add(ArchimedesPosKey.Pack(pos));
+                }
+
+                controllerRelaySourceKeys[cId] = relayKeys;
+            }
+        }
+
         Dictionary<string, int>? provenanceRaw = LoadSerialized<Dictionary<string, int>>(SaveKeySourceProvenance);
         if (provenanceRaw != null)
         {
@@ -492,6 +516,14 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             SerializerUtil.Serialize(controllerPosById.ToDictionary(kvp => kvp.Key, kvp => ArchimedesPosKey.ToDebugString(kvp.Value), StringComparer.Ordinal))
         );
         api.WorldManager.SaveGame.StoreData(SaveKeyControllerOwned, SerializerUtil.Serialize(controllerOwnedById));
+        api.WorldManager.SaveGame.StoreData(
+            SaveKeyControllerRelayOwned,
+            SerializerUtil.Serialize(
+                controllerRelaySourceKeys.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => ArchimedesPositionCodec.EncodePositions(kvp.Value.Select(ArchimedesPosKey.UnpackToNew).ToList()),
+                    StringComparer.Ordinal))
+        );
         api.WorldManager.SaveGame.StoreData(
             SaveKeySourceProvenance,
             SerializerUtil.Serialize(sourceProvenanceByPos.ToDictionary(kvp => ArchimedesPosKey.ToDebugString(kvp.Key), kvp => (int)kvp.Value, StringComparer.Ordinal))
@@ -927,32 +959,94 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     public IReadOnlyList<BlockPos> GetOwnedSourcePositionsForController(string controllerId)
     {
-        HashSet<long> keys = new();
         List<BlockPos> result = new();
-
-        if (controllerOwnedById.TryGetValue(controllerId, out int[]? encoded))
-        {
-            foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(encoded))
-            {
-                long key = ArchimedesPosKey.Pack(pos);
-                if (keys.Add(key))
-                {
-                    result.Add(pos.Copy());
-                }
-            }
-        }
-
         foreach ((long key, string ownerId) in sourceOwnerByPos)
         {
-            if (!string.Equals(ownerId, controllerId, StringComparison.Ordinal) || !keys.Add(key))
+            if (string.Equals(ownerId, controllerId, StringComparison.Ordinal))
             {
-                continue;
+                result.Add(ArchimedesPosKey.UnpackToNew(key));
             }
-            BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
-            result.Add(pos.Copy());
         }
 
         return result;
+    }
+
+    public bool IsOwnedByController(string controllerId, BlockPos pos)
+    {
+        long key = ArchimedesPosKey.Pack(pos);
+        return sourceOwnerByPos.TryGetValue(key, out string? ownerId) &&
+               string.Equals(ownerId, controllerId, StringComparison.Ordinal);
+    }
+
+    public int GetOwnedCountForController(string controllerId)
+    {
+        int count = 0;
+        foreach (string ownerId in sourceOwnerByPos.Values)
+        {
+            if (string.Equals(ownerId, controllerId, StringComparison.Ordinal))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    public bool IsRelayOwnedByController(string controllerId, BlockPos pos)
+    {
+        long key = ArchimedesPosKey.Pack(pos);
+        return controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? keys) &&
+               keys.Contains(key);
+    }
+
+    public int GetRelayOwnedCountForController(string controllerId)
+    {
+        return controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? keys) ? keys.Count : 0;
+    }
+
+    public IReadOnlyList<BlockPos> GetRelayOwnedPositionsForController(string controllerId)
+    {
+        if (!controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? keys))
+        {
+            return Array.Empty<BlockPos>();
+        }
+
+        List<BlockPos> result = new(keys.Count);
+        foreach (long key in keys)
+        {
+            result.Add(ArchimedesPosKey.UnpackToNew(key));
+        }
+
+        return result;
+    }
+
+    public bool AssignRelaySourceForController(string controllerId, BlockPos pos, string familyId)
+    {
+        if (!AssignOwnedSourceForController(controllerId, pos, familyId))
+        {
+            return false;
+        }
+
+        long key = ArchimedesPosKey.Pack(pos);
+        if (!controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? relayKeys))
+        {
+            relayKeys = new HashSet<long>();
+            controllerRelaySourceKeys[controllerId] = relayKeys;
+        }
+
+        relayKeys.Add(key);
+        return true;
+    }
+
+    public void ReleaseRelaySourceForController(string controllerId, BlockPos pos)
+    {
+        long key = ArchimedesPosKey.Pack(pos);
+        if (controllerRelaySourceKeys.TryGetValue(controllerId, out HashSet<long>? relayKeys))
+        {
+            relayKeys.Remove(key);
+        }
+
+        ReleaseOwnedSourceForController(controllerId, pos);
     }
 
     public bool EnsureSourceOwnership(string ownerId, BlockPos pos)
@@ -991,6 +1085,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         sourceOwnerByPos.Remove(key);
         sourceProvenanceByPos.Remove(key);
         managedAdoptionCooldownUntilMsByKey[key] = Environment.TickCount64 + ManagedAdoptionCooldownAfterReleaseMs;
+        if (controllerRelaySourceKeys.TryGetValue(owner, out HashSet<long>? ownerRelayKeys))
+        {
+            ownerRelayKeys.Remove(key);
+        }
+
         RemoveOwnedPosFromSnapshot(ownerId, pos);
         Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
         if (!IsArchimedesWaterBlock(fluidBlock))
@@ -1428,6 +1527,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         sourceProvenanceByPos.Remove(key);
         RemoveOwnedPosFromSnapshot(ownerId, pos);
+        if (controllerRelaySourceKeys.TryGetValue(ownerId, out HashSet<long>? removedRelayKeys))
+        {
+            removedRelayKeys.Remove(key);
+        }
+
         if (loadedControllers.TryGetValue(ownerId, out WeakReference<BlockEntityWaterArchimedesScrew>? reference) &&
             reference.TryGetTarget(out BlockEntityWaterArchimedesScrew? controller))
         {
