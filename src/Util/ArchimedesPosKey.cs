@@ -81,7 +81,9 @@ public static class ArchimedesPosKey
     public static bool TryPack(int x, int y, int z, out long packed)
     {
         EnsureInitialized();
-        if (!IsInBounds(x, y, z))
+        // Inlined bounds check: avoids the second EnsureInitialized() inside IsInBounds() in the
+        // hot path (BFS neighbour loops call TryPack tens of thousands of times per tick).
+        if ((uint)x >= (uint)mapSizeX || (uint)y >= (uint)mapSizeY || (uint)z >= (uint)mapSizeZ)
         {
             packed = 0;
             return false;
@@ -94,9 +96,9 @@ public static class ArchimedesPosKey
     public static bool IsInBounds(int x, int y, int z)
     {
         EnsureInitialized();
-        return x >= 0 && x < mapSizeX &&
-               y >= 0 && y < mapSizeY &&
-               z >= 0 && z < mapSizeZ;
+        return (uint)x < (uint)mapSizeX &&
+               (uint)y < (uint)mapSizeY &&
+               (uint)z < (uint)mapSizeZ;
     }
 
     public static void Unpack(long key, BlockPos target)
@@ -148,7 +150,8 @@ public static class ArchimedesPosKey
 
     private static void ValidateRange(int x, int y, int z)
     {
-        if (x < 0 || x >= mapSizeX || y < 0 || y >= mapSizeY || z < 0 || z >= mapSizeZ)
+        // Cast-to-uint trick collapses the negative + over-bound checks into a single comparison.
+        if ((uint)x >= (uint)mapSizeX || (uint)y >= (uint)mapSizeY || (uint)z >= (uint)mapSizeZ)
         {
             throw new InvalidOperationException(
                 $"Out-of-range world position ({x},{y},{z}) for map bounds [0..{mapSizeX - 1}], [0..{mapSizeY - 1}], [0..{mapSizeZ - 1}].");

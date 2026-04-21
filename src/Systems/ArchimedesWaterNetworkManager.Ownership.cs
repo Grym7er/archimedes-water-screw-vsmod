@@ -112,25 +112,32 @@ public sealed partial class ArchimedesWaterNetworkManager
             newKeys.Add(ArchimedesPosKey.Pack(pos));
         }
 
-        List<long> toRemove = new();
-        foreach (KeyValuePair<long, string> pair in sourceOwnerByPos)
+        removedStaleSourceOwnerKeys = 0;
+        if (ownedKeysByController.TryGetValue(controllerId, out HashSet<long>? existingKeys))
         {
-            if (string.Equals(pair.Value, controllerId, StringComparison.Ordinal) && !newKeys.Contains(pair.Key))
+            List<long> toRemove = replaceOwnershipStaleScratch;
+            toRemove.Clear();
+            foreach (long key in existingKeys)
             {
-                toRemove.Add(pair.Key);
+                if (!newKeys.Contains(key))
+                {
+                    toRemove.Add(key);
+                }
             }
+
+            removedStaleSourceOwnerKeys = toRemove.Count;
+            foreach (long key in toRemove)
+            {
+                sourceOwnerByPos.Remove(key);
+                existingKeys.Remove(key);
+            }
+
+            toRemove.Clear();
         }
 
-        removedStaleSourceOwnerKeys = toRemove.Count;
-        foreach (long key in toRemove)
+        foreach (long key in newKeys)
         {
-            sourceOwnerByPos.Remove(key);
-        }
-
-        foreach (BlockPos pos in sourcePositions)
-        {
-            long key = ArchimedesPosKey.Pack(pos);
-            sourceOwnerByPos[key] = controllerId;
+            AssignSourceOwnerInternal(key, controllerId);
             if (!sourceProvenanceByPos.ContainsKey(key))
             {
                 sourceProvenanceByPos[key] = ManagedSourceProvenance.ControllerSeedOrRelay;
@@ -157,27 +164,23 @@ public sealed partial class ArchimedesWaterNetworkManager
             }
         }
 
-        List<long> ownedKeys = new();
-        foreach (KeyValuePair<long, string> pair in sourceOwnerByPos)
+        int clearedCount = 0;
+        if (ownedKeysByController.Remove(controllerId, out HashSet<long>? ownedKeys))
         {
-            if (string.Equals(pair.Value, controllerId, StringComparison.Ordinal))
+            clearedCount = ownedKeys.Count;
+            foreach (long key in ownedKeys)
             {
-                ownedKeys.Add(pair.Key);
+                sourceOwnerByPos.Remove(key);
+                sourceProvenanceByPos.Remove(key);
             }
         }
 
-        foreach (long key in ownedKeys)
-        {
-            sourceOwnerByPos.Remove(key);
-            sourceProvenanceByPos.Remove(key);
-        }
-
-        if (ownedKeys.Count > 0)
+        if (clearedCount > 0)
         {
             api.Logger.Debug(
                 "{0} RemoveControllerSnapshot: cleared {1} sourceOwnerByPos entr(y/ies) for controller={2}",
                 ArchimedesScrewModSystem.LogPrefix,
-                ownedKeys.Count,
+                clearedCount,
                 controllerId);
         }
     }

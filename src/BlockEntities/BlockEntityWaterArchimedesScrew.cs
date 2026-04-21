@@ -31,6 +31,27 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private readonly Dictionary<long, BlockPos> ownedPositions = new();
     private readonly Dictionary<long, BlockPos> relayOwnedPositions = new();
 
+    // Reusable scratch for top-K relay-candidate selection. Reverse comparer turns the priority
+    // queue into a bounded max-heap: we only keep the K best candidates (smallest natural rank),
+    // so the worst entry sits at the top and gets evicted when a better candidate arrives.
+    private readonly PriorityQueue<long, RelayCandidateRank> relayTopKScratch = new(new ReverseRelayCandidateRankComparer());
+    private readonly List<RelayCandidateEntry> relayCandidateOrderedScratch = new();
+
+    // Reusable scratch for top-K trim selection. Default min-heap behaviour: we keep the K worst
+    // (largest natural rank) entries; the smallest of that set sits at the top and is evicted
+    // when a strictly worse incumbent arrives.
+    private readonly PriorityQueue<BlockPos, TrimCandidateRank> trimTopKScratch = new();
+    private readonly List<BlockPos> trimOrderedScratch = new();
+
+    // Reusable decorate-sort-undecorate scratch for unsupported-release ordering. MinDistanceSquared
+    // is precomputed once per candidate (vs O(N log N) recomputations inside the comparer).
+    private readonly List<(int MinDistSq, BlockPos Pos)> releaseDecoratedScratch = new();
+
+    // Reusable origin list for BuildDrainProbeOriginPositions. Consumers (drain/seize) treat the
+    // list as read-only and don't retain references across the call, so we can share BlockPos
+    // instances without defensive copies.
+    private readonly List<BlockPos> drainProbeOriginScratch = new();
+
     /// <summary>
     /// Per-relay promotion timestamp (Environment.TickCount64). Used by age-based trim to drop newest first.
     /// Entries restored from save are stamped 0 so legacy relays are treated as oldest (kept preferentially).
@@ -511,7 +532,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 waterManager != null &&
                 waterConfig != null)
             {
-                int seized = waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
+                // The seize result was previously assigned to a local that nothing read; downstream
+                // scheduling for the unpowered branch is decided entirely by HandleInvalidControllerState.
+                waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
                     BuildDrainProbeOriginPositions(evaluation.SeedPos),
                     evaluation.FamilyId,
                     ControllerId,
@@ -583,13 +606,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         (int relayCreated, int relayTrimmed) = RunRelayMaintenance(
             seedPos,
             familyId,
-            connectedWaterKeys,
-            connectedWater,
+            connectedResult,
             relayCap,
             relayWorkBudget,
             fastMs,
-            isTruncated,
-            connectedResult.VisitedManagedCount
+            isTruncated
         );
 
         int removedDisconnected = 0;
@@ -647,13 +668,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private (int RelayCreated, int RelayTrimmed) RunRelayMaintenance(
         BlockPos seedPos,
         string familyId,
-        HashSet<long> connectedWaterKeys,
-        Dictionary<long, BlockPos> connectedWater,
+        ConnectedManagedWaterResult connectedResult,
         int relayCap,
         int relayWorkBudget,
         int fastMs,
-        bool isTruncated,
-        int visitedManagedCount
+        bool isTruncated
     )
     {
         int relayCreated = 0;
@@ -663,7 +682,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             if (relayDue)
             {
-                relayCreated = CreateRelaySources(seedPos, familyId, connectedWaterKeys, connectedWater, relayCap, relayWorkBudget);
+                relayCreated = CreateRelaySources(familyId, connectedResult, relayCap, relayWorkBudget);
                 ScheduleNextRelayCreationTick(fastMs);
             }
 
@@ -671,7 +690,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
         else if (isTruncated)
         {
-            LogTruncationPause(seedPos, visitedManagedCount);
+            LogTruncationPause(seedPos, connectedResult.VisitedManagedCount);
         }
 
         return (relayCreated, relayTrimmed);
@@ -768,19 +787,23 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     private List<BlockPos> BuildDrainProbeOriginPositions(BlockPos primarySeed)
     {
-        List<BlockPos> list = new();
-        list.Add(primarySeed.Copy());
+        // Consumers (DrainUnsupportedSources, SeizeVanillaSourcesInConnectedFamilyFluid) treat the
+        // returned list as read-only and don't retain references after returning. Reusing a single
+        // scratch list and skipping defensive .Copy() avoids per-tick allocation proportional to
+        // ownedPositions.Count for a controller's hot path.
+        drainProbeOriginScratch.Clear();
+        drainProbeOriginScratch.Add(primarySeed);
         if (lastSeedPos != null)
         {
-            list.Add(lastSeedPos.Copy());
+            drainProbeOriginScratch.Add(lastSeedPos);
         }
 
         foreach (BlockPos p in ownedPositions.Values)
         {
-            list.Add(p.Copy());
+            drainProbeOriginScratch.Add(p);
         }
 
-        return list;
+        return drainProbeOriginScratch;
     }
 
     private bool EnsureSeedSource(BlockPos seedPos, string familyId)
@@ -933,10 +956,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     }
 
     private int CreateRelaySources(
-        BlockPos seedPos,
         string familyId,
-        HashSet<long> connectedWaterKeys,
-        Dictionary<long, BlockPos> connectedWater,
+        ConnectedManagedWaterResult connectedResult,
         int relayCap,
         int perTickBudget)
     {
@@ -946,33 +967,45 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return 0;
         }
 
-        Dictionary<long, int> distanceByKey = BuildDistanceMap(seedPos, connectedWaterKeys);
+        Dictionary<long, BlockPos> connectedWater = connectedResult.PositionsByKey;
+        // Distances are recorded inline by the manager's BFS at component-collection time and cached
+        // alongside the component, eliminating the second BFS this method used to run. DistanceByKey
+        // is anchored at connectedResult.StartPos (the first caller that populated the cache this
+        // tick), which may or may not equal this controller's seedPos - see plan phase 3 exit
+        // criteria: relay selection is the same "modulo the now-shared distance map".
+        Dictionary<long, int>? distanceByKey = connectedResult.DistanceByKey;
+        if (distanceByKey == null || distanceByKey.Count == 0)
+        {
+            return 0;
+        }
+
+        int budget = Math.Max(1, perTickBudget);
+        int maxCreateAllowed = Math.Min(budget, relayCap - relayOwnedPositions.Count);
+        if (maxCreateAllowed <= 0)
+        {
+            return 0;
+        }
+
+        bool useRandomBucket = IsRandomWithinDistanceBucketMode();
+        IEnumerable<RelayCandidateEntry> orderedCandidates = useRandomBucket
+            ? EnumerateRelayCandidatesRandomBucket(distanceByKey, connectedWater, BuildRelayOrderingSeed())
+            : SelectTopKRelayCandidatesDeterministic(distanceByKey, connectedWater, maxCreateAllowed);
+
         int candidatesExamined = 0;
         int rejectedCooldown = 0;
         int rejectedOtherOwner = 0;
         int rejectedNotCandidate = 0;
         int rejectedAssignFailed = 0;
         int created = 0;
-        int budget = Math.Max(1, perTickBudget);
-        int maxCreateAllowed = Math.Min(budget, relayCap - relayOwnedPositions.Count);
-        int randomSeed = BuildRelayOrderingSeed();
-        foreach ((long key, int distance) in OrderRelayPromotionCandidates(distanceByKey, randomSeed))
+        foreach (RelayCandidateEntry candidate in orderedCandidates)
         {
             if (created >= maxCreateAllowed)
             {
                 break;
             }
 
-            if (distance <= 0)
-            {
-                continue;
-            }
-
-            if (!connectedWater.TryGetValue(key, out BlockPos? pos))
-            {
-                continue;
-            }
-
+            BlockPos pos = candidate.Pos;
+            long key = candidate.Key;
             candidatesExamined++;
             if (!IsRelayCreationCandidate(pos))
             {
@@ -983,20 +1016,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             if (waterManager.TryGetSourceOwner(pos, out string ownerId) &&
                 !string.Equals(ownerId, ControllerId, StringComparison.Ordinal))
             {
-                bool ownerLoaded = waterManager.IsControllerLoaded(ownerId);
-                if (!ownerLoaded)
-                {
-                    // Allow takeover when prior owner isn't loaded, preventing stale ownership deadlocks.
-                }
-                else
-                {
-                    rejectedOtherOwner++;
-                    continue;
-                }
-            }
-
-            if (relayOwnedPositions.ContainsKey(key))
-            {
+                // Skip cells already owned by a different controller. The previous "takeover when
+                // prior owner isn't loaded" branch was dead code: AssignRelaySourceForController ->
+                // AssignOwnedSourceForController rejects re-assignment regardless of loaded state,
+                // so the assign would just fail later. Reject up front to avoid the wasted call.
+                rejectedOtherOwner++;
                 continue;
             }
 
@@ -1033,6 +1057,111 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return created;
     }
 
+    /// <summary>
+    /// Single-pass top-K selection over <paramref name="distanceByKey"/> using a bounded max-heap of
+    /// size <paramref name="maxCreateAllowed"/>. Cheap pre-filter (distance &gt; 0, present in the
+    /// connected map, not already promoted) prunes the candidate set before the heap. The heap is
+    /// then drained and sorted ascending so callers iterate best-first.
+    /// </summary>
+    private List<RelayCandidateEntry> SelectTopKRelayCandidatesDeterministic(
+        Dictionary<long, int> distanceByKey,
+        Dictionary<long, BlockPos> connectedWater,
+        int maxCreateAllowed)
+    {
+        relayTopKScratch.Clear();
+        relayCandidateOrderedScratch.Clear();
+        foreach ((long key, int distance) in distanceByKey)
+        {
+            if (distance <= 0)
+            {
+                continue;
+            }
+
+            if (!connectedWater.TryGetValue(key, out BlockPos? pos))
+            {
+                continue;
+            }
+
+            if (relayOwnedPositions.ContainsKey(key))
+            {
+                continue;
+            }
+
+            RelayCandidateRank rank = new(distance, -pos.Y, key);
+            if (relayTopKScratch.Count < maxCreateAllowed)
+            {
+                relayTopKScratch.Enqueue(key, rank);
+                continue;
+            }
+
+            // Reverse comparer makes Peek() return the *worst* of the current top-K; only enqueue
+            // when the incoming candidate would displace it.
+            if (relayTopKScratch.TryPeek(out _, out RelayCandidateRank worst) &&
+                rank.CompareTo(worst) < 0)
+            {
+                relayTopKScratch.EnqueueDequeue(key, rank);
+            }
+        }
+
+        while (relayTopKScratch.TryDequeue(out long key, out RelayCandidateRank rank))
+        {
+            if (!connectedWater.TryGetValue(key, out BlockPos? pos))
+            {
+                continue;
+            }
+
+            relayCandidateOrderedScratch.Add(new RelayCandidateEntry(key, pos, rank));
+        }
+
+        // Heap dequeue order is reverse (worst-first) under our comparer; sort to natural order.
+        relayCandidateOrderedScratch.Sort(static (a, b) => a.Rank.CompareTo(b.Rank));
+        return relayCandidateOrderedScratch;
+    }
+
+    /// <summary>
+    /// Random-within-distance-bucket enumeration: walks distance buckets in ascending order, shuffles
+    /// each bucket with the supplied seed, and yields entries lazily so consumers can stop after the
+    /// per-tick budget is filled (the original eager GroupBy materialised every bucket up front).
+    /// </summary>
+    private IEnumerable<RelayCandidateEntry> EnumerateRelayCandidatesRandomBucket(
+        Dictionary<long, int> distanceByKey,
+        Dictionary<long, BlockPos> connectedWater,
+        int randomSeed)
+    {
+        Random random = new(randomSeed);
+        // Group by distance ascending; each bucket is shuffled lazily on demand. GroupBy still
+        // performs a single eager pass over the source, but per-bucket shuffling now happens only
+        // for the buckets the consumer actually walks.
+        foreach (IGrouping<int, KeyValuePair<long, int>> bucket in distanceByKey
+                     .Where(p => p.Value > 0)
+                     .GroupBy(p => p.Value)
+                     .OrderBy(g => g.Key))
+        {
+            List<KeyValuePair<long, int>> shuffled = bucket.ToList();
+            for (int i = shuffled.Count - 1; i > 0; i--)
+            {
+                int j = random.Next(i + 1);
+                (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
+            }
+
+            foreach (KeyValuePair<long, int> pair in shuffled)
+            {
+                long key = pair.Key;
+                if (relayOwnedPositions.ContainsKey(key))
+                {
+                    continue;
+                }
+
+                if (!connectedWater.TryGetValue(key, out BlockPos? pos))
+                {
+                    continue;
+                }
+
+                yield return new RelayCandidateEntry(key, pos, new RelayCandidateRank(pair.Value, -pos.Y, key));
+            }
+        }
+    }
+
     private int TrimRelaySourcesToCap(BlockPos seedPos, int relayCap, int perTickBudget)
     {
         if (waterManager == null || relayOwnedPositions.Count <= relayCap)
@@ -1042,14 +1171,37 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         int overflow = relayOwnedPositions.Count - relayCap;
         int removeCount = Math.Min(Math.Max(1, perTickBudget), overflow);
-        // Age-based trim: newest promotions are released first; legacy entries (PromotedAtMs == 0) are kept.
-        List<BlockPos> ordered = relayOwnedPositions
-            .OrderByDescending(kvp => relayPromotedAtMsByKey.TryGetValue(kvp.Key, out long ts) ? ts : 0L)
-            .ThenByDescending(kvp => ArchimedesPositionCodec.DistanceSquared(kvp.Value, seedPos))
-            .Select(kvp => kvp.Value)
-            .Take(removeCount)
-            .ToList();
-        foreach (BlockPos pos in ordered)
+        // Age-based trim: newest promotions (largest PromotedAtMs) are released first; legacy
+        // entries (PromotedAtMs == 0) sort to the bottom and are kept preferentially. Bounded
+        // min-heap of size removeCount collects the K worst entries in a single pass (no full sort).
+        trimTopKScratch.Clear();
+        trimOrderedScratch.Clear();
+        foreach ((long key, BlockPos pos) in relayOwnedPositions)
+        {
+            long promotedAt = relayPromotedAtMsByKey.TryGetValue(key, out long ts) ? ts : 0L;
+            long distSq = ArchimedesPositionCodec.DistanceSquared(pos, seedPos);
+            TrimCandidateRank rank = new(promotedAt, distSq);
+            if (trimTopKScratch.Count < removeCount)
+            {
+                trimTopKScratch.Enqueue(pos, rank);
+                continue;
+            }
+
+            // Default comparer = min-heap; Peek returns the smallest of the current top-K.
+            // Only swap when the new candidate is strictly worse (larger rank) than the incumbent.
+            if (trimTopKScratch.TryPeek(out _, out TrimCandidateRank smallest) &&
+                rank.CompareTo(smallest) > 0)
+            {
+                trimTopKScratch.EnqueueDequeue(pos, rank);
+            }
+        }
+
+        while (trimTopKScratch.TryDequeue(out BlockPos? pos, out _))
+        {
+            trimOrderedScratch.Add(pos);
+        }
+
+        foreach (BlockPos pos in trimOrderedScratch)
         {
             long key = ArchimedesPosKey.Pack(pos);
             RemoveRelayOwnership(key);
@@ -1060,13 +1212,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             ownershipChurnTotal++;
         }
 
-        ArchimedesPerf.AddCount("controller.relayTrimmed", ordered.Count);
-        if (ordered.Count > 0)
+        int trimmed = trimOrderedScratch.Count;
+        ArchimedesPerf.AddCount("controller.relayTrimmed", trimmed);
+        if (trimmed > 0)
         {
             UpdateSnapshot();
         }
 
-        return ordered.Count;
+        return trimmed;
     }
 
     private bool IsRelayCreationCandidate(BlockPos pos)
@@ -1099,15 +1252,24 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         bool bypassGraceForPureUnpowered = !forceDrain
             && string.IsNullOrWhiteSpace(evaluation.FailureReason);
 
-        int removed = DrainUnsupportedSources(
-            Array.Empty<ArchimedesOutletState>(),
-            EmptyKeySet,
-            evaluation.FailureReason,
-            ignoreGrace: forceDrain || bypassGraceForPureUnpowered);
-        // Orphan managed-water cleanup must follow the same bypass rule; otherwise post-load grace
-        // blocks unowned-managed removals for the same 12s window, leaving orphan fluid in the world.
-        int orphanRemoved = CleanupUnownedManagedSourcesForControllerState(
-            ignoreGrace: forceDrain || bypassGraceForPureUnpowered);
+        // Derelict short-circuit: if there is nothing owned, no seed memory, and no prior controller
+        // history, drain/orphan-cleanup cannot find anything to act on. Skip directly to scheduling.
+        bool hasAnyStateToRecover = ownedPositions.Count > 0 || lastSeedPos != null || wasController;
+        int removed = 0;
+        int orphanRemoved = 0;
+        if (forceDrain || hasAnyStateToRecover)
+        {
+            removed = DrainUnsupportedSources(
+                Array.Empty<ArchimedesOutletState>(),
+                EmptyKeySet,
+                evaluation.FailureReason,
+                ignoreGrace: forceDrain || bypassGraceForPureUnpowered);
+            // Orphan managed-water cleanup must follow the same bypass rule; otherwise post-load grace
+            // blocks unowned-managed removals for the same 12s window, leaving orphan fluid in the world.
+            orphanRemoved = CleanupUnownedManagedSourcesForControllerState(
+                ignoreGrace: forceDrain || bypassGraceForPureUnpowered);
+        }
+
         ArchimedesScrewControllerSchedule schedule = ownedPositions.Count > 0 || removed > 0
             ? ArchimedesScrewControllerSchedule.HighCadence
             : ArchimedesScrewControllerSchedule.LowCadence;
@@ -1117,108 +1279,6 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         ScheduleNextWaterTick(schedule, fastMs, idleMs);
-    }
-
-    private Dictionary<long, int> BuildDistanceMap(BlockPos seedPos, HashSet<long> connectedWaterKeys)
-    {
-        Dictionary<long, int> distanceByKey = new();
-        long seedKey = ArchimedesPosKey.Pack(seedPos);
-        if (!connectedWaterKeys.Contains(seedKey))
-        {
-            return distanceByKey;
-        }
-
-        Queue<long> queue = new();
-        distanceByKey[seedKey] = 0;
-        queue.Enqueue(seedKey);
-        BlockPos currentPos = new(0);
-        BlockPos nextPos = new(0);
-        while (queue.Count > 0)
-        {
-            long currentKey = queue.Dequeue();
-            ArchimedesPosKey.Unpack(currentKey, currentPos);
-            int currentDistance = distanceByKey[currentKey];
-            foreach (BlockFacing face in BlockFacing.ALLFACES)
-            {
-                int nextX = currentPos.X + face.Normali.X;
-                int nextY = currentPos.Y + face.Normali.Y;
-                int nextZ = currentPos.Z + face.Normali.Z;
-                if (!ArchimedesPosKey.TryPack(nextX, nextY, nextZ, out long nextKey))
-                {
-                    continue;
-                }
-
-                if (!connectedWaterKeys.Contains(nextKey) || distanceByKey.ContainsKey(nextKey))
-                {
-                    continue;
-                }
-
-                nextPos.Set(nextX, nextY, nextZ);
-                if (!ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(Api!.World, currentPos, nextPos))
-                {
-                    // HCW aqueducts present a solid top/bottom face to the vanilla barrier API, but HCW itself
-                    // propagates water across stacked aqueducts. Mirror the override used in the manager's BFS
-                    // so the distance map reaches the full cascade and downstream cells can be promoted.
-                    Block fromSolid = Api!.World.BlockAccessor.GetBlock(currentPos);
-                    Block toSolid = Api!.World.BlockAccessor.GetBlock(nextPos);
-                    bool aqueductBoundary = ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(fromSolid) ||
-                                            ArchimedesAqueductDetector.IsHardcoreWaterAqueduct(toSolid);
-                    if (!aqueductBoundary)
-                    {
-                        continue;
-                    }
-                }
-
-                distanceByKey[nextKey] = currentDistance + 1;
-                queue.Enqueue(nextKey);
-            }
-        }
-
-        return distanceByKey;
-    }
-
-    private IEnumerable<KeyValuePair<long, int>> OrderRelayPromotionCandidates(
-        Dictionary<long, int> distanceByKey,
-        int randomSeed)
-    {
-        if (IsRandomWithinDistanceBucketMode())
-        {
-            foreach (KeyValuePair<long, int> candidate in OrderRelayPromotionCandidatesRandomWithinDistanceBucket(distanceByKey, randomSeed))
-            {
-                yield return candidate;
-            }
-
-            yield break;
-        }
-
-        foreach (KeyValuePair<long, int> candidate in distanceByKey
-                     .OrderBy(p => p.Value)
-                     .ThenByDescending(p => ArchimedesPosKey.ExtractY(p.Key))
-                     .ThenBy(p => p.Key))
-        {
-            yield return candidate;
-        }
-    }
-
-    private IEnumerable<KeyValuePair<long, int>> OrderRelayPromotionCandidatesRandomWithinDistanceBucket(
-        Dictionary<long, int> distanceByKey,
-        int randomSeed)
-    {
-        Random random = new(randomSeed);
-        foreach (IGrouping<int, KeyValuePair<long, int>> bucket in distanceByKey.GroupBy(p => p.Value).OrderBy(g => g.Key))
-        {
-            List<KeyValuePair<long, int>> shuffled = bucket.ToList();
-            for (int i = shuffled.Count - 1; i > 0; i--)
-            {
-                int j = random.Next(i + 1);
-                (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
-            }
-
-            foreach (KeyValuePair<long, int> candidate in shuffled)
-            {
-                yield return candidate;
-            }
-        }
     }
 
     private bool IsRandomWithinDistanceBucketMode()
@@ -1248,30 +1308,45 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return HashCode.Combine(ControllerId, tickBucket, relayOwnedPositions.Count, ownedPositions.Count);
     }
 
-    private static List<BlockPos> OrderUnsupportedReleaseCandidates(List<BlockPos> releaseCandidates, List<BlockPos> origins)
+    private List<BlockPos> OrderUnsupportedReleaseCandidates(List<BlockPos> releaseCandidates, List<BlockPos> origins)
     {
-        releaseCandidates.Sort((left, right) =>
+        releaseDecoratedScratch.Clear();
+        for (int i = 0; i < releaseCandidates.Count; i++)
         {
-            int distCmp = MinDistanceSquared(left, origins).CompareTo(MinDistanceSquared(right, origins));
+            BlockPos pos = releaseCandidates[i];
+            releaseDecoratedScratch.Add((MinDistanceSquared(pos, origins), pos));
+        }
+
+        releaseDecoratedScratch.Sort(static (left, right) =>
+        {
+            int distCmp = left.MinDistSq.CompareTo(right.MinDistSq);
             if (distCmp != 0)
             {
                 return distCmp;
             }
 
-            int yCmp = right.Y.CompareTo(left.Y);
+            BlockPos lp = left.Pos;
+            BlockPos rp = right.Pos;
+            int yCmp = rp.Y.CompareTo(lp.Y);
             if (yCmp != 0)
             {
                 return yCmp;
             }
 
-            int xCmp = right.X.CompareTo(left.X);
+            int xCmp = rp.X.CompareTo(lp.X);
             if (xCmp != 0)
             {
                 return xCmp;
             }
 
-            return right.Z.CompareTo(left.Z);
+            return rp.Z.CompareTo(lp.Z);
         });
+
+        releaseCandidates.Clear();
+        for (int i = 0; i < releaseDecoratedScratch.Count; i++)
+        {
+            releaseCandidates.Add(releaseDecoratedScratch[i].Pos);
+        }
 
         return releaseCandidates;
     }
@@ -1327,23 +1402,47 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
+        // Two-pass: first walk relayOwnedPositions in-place to count stale keys (those whose owning
+        // BE state has dropped them from ownedPositions). Stale entries are rare in steady state
+        // (existing removal call sites in TrimRelaySourcesToCap and DrainUnsupportedSources keep
+        // them in sync), so we skip allocating any scratch list when nothing needs reconciling.
+        int staleCount = 0;
+        foreach (long key in relayOwnedPositions.Keys)
+        {
+            if (!ownedPositions.ContainsKey(key))
+            {
+                staleCount++;
+            }
+        }
+
+        if (staleCount == 0)
+        {
+            return;
+        }
+
         const int maxSampleCount = 5;
         int removedInvalidKeys = 0;
         List<string> invalidSamples = new();
-        foreach (long key in relayOwnedPositions.Keys.ToList())
+        // Allocate the removal scratch only when at least one stale key is present.
+        List<long> staleKeys = new(staleCount);
+        foreach (long key in relayOwnedPositions.Keys)
         {
-            bool stillOwned = ownedPositions.ContainsKey(key);
+            if (!ownedPositions.ContainsKey(key))
+            {
+                staleKeys.Add(key);
+            }
+        }
+
+        foreach (long key in staleKeys)
+        {
             // Keep relay markers stable across temporary source/flow transitions,
             // especially around save/load when fluid state can lag ownership restore.
             // Remove only when ownership no longer includes this relay position.
-            if (!stillOwned)
+            RemoveRelayOwnership(key);
+            removedInvalidKeys++;
+            if (invalidSamples.Count < maxSampleCount)
             {
-                RemoveRelayOwnership(key);
-                removedInvalidKeys++;
-                if (invalidSamples.Count < maxSampleCount)
-                {
-                    invalidSamples.Add(ArchimedesPosKey.ToDebugString(key));
-                }
+                invalidSamples.Add(ArchimedesPosKey.ToDebugString(key));
             }
         }
 
@@ -1381,6 +1480,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         long now = Environment.TickCount64;
         if (!ignoreGrace && now < drainUnsupportedGraceUntilMs)
+        {
+            return 0;
+        }
+
+        // Idle/derelict short-circuit: avoid reconcile overhead when this controller has nothing to
+        // drain and no seed memory of a previously-active state. When ignoreGrace is requested we
+        // still run through reconcile so post-load forced drains remain authoritative.
+        if (!ignoreGrace && ownedPositions.Count == 0 && lastSeedPos == null)
         {
             return 0;
         }
@@ -1437,14 +1544,22 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             ArchimedesPerf.AddCount("controller.drainUnsupported.fallbackNoUnstable");
         }
+        bool mutated = false;
         for (int i = 0; i < releaseCount; i++)
         {
             BlockPos pos = releaseCandidates[i];
             long key = ArchimedesPosKey.Pack(pos);
             ReleaseOutcome outcome = waterManager.ReleaseOwnedSourceForController(ControllerId, pos);
 
-            ownedPositions.Remove(key);
-            RemoveRelayOwnership(key);
+            if (ownedPositions.Remove(key))
+            {
+                mutated = true;
+            }
+            if (relayOwnedPositions.Remove(key))
+            {
+                mutated = true;
+            }
+            relayPromotedAtMsByKey.Remove(key);
 
             if (outcome == ReleaseOutcome.OwnedByOtherController)
             {
@@ -1463,7 +1578,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             ownershipChurnTotal++;
         }
 
-        UpdateSnapshot();
+        if (mutated)
+        {
+            UpdateSnapshot();
+        }
         Log(
             "Drain tick toward {0}: removedSources={1}, remainingSources={2}, reason={3}",
             origins[0],
@@ -1493,13 +1611,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             }
 
             Block fluid = Api.World.BlockAccessor.GetBlock(neighbourPos, BlockLayersAccess.Fluid);
-            if (!waterManager.IsArchimedesWaterBlock(fluid))
-            {
-                continue;
-            }
-
-            if (string.Equals(fluid.Variant?["height"], "6", StringComparison.Ordinal) ||
-                string.Equals(fluid.Variant?["height"], "7", StringComparison.Ordinal))
+            if (waterManager.IsArchimedesManagedFlowOrSourceHeight(fluid))
             {
                 count++;
             }
@@ -1764,9 +1876,26 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         Log("{0} changed to {1}", name, value);
     }
 
-    private static int MinDistanceSquared(BlockPos pos, IEnumerable<BlockPos> origins)
+    private static int MinDistanceSquared(BlockPos pos, List<BlockPos> origins)
     {
-        return origins.Min(origin => ArchimedesPositionCodec.DistanceSquared(pos, origin));
+        // Manual loop avoids per-call enumerator allocation when called N times during the
+        // unsupported-release decorate pass.
+        if (origins.Count == 0)
+        {
+            return 0;
+        }
+
+        int min = ArchimedesPositionCodec.DistanceSquared(pos, origins[0]);
+        for (int i = 1; i < origins.Count; i++)
+        {
+            int d = ArchimedesPositionCodec.DistanceSquared(pos, origins[i]);
+            if (d < min)
+            {
+                min = d;
+            }
+        }
+
+        return min;
     }
 
     private IEnumerable<BlockPos> SafeDecodePositionArray(byte[] encodedBytes, string fieldName)
@@ -1829,4 +1958,41 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         string? FamilyId,
         BlockPos? SeedPos
     );
+
+    // Mirror the legacy LINQ ordering used by deterministic relay selection:
+    //   primary  : distance ascending (closer to seed first)
+    //   secondary: Y descending       (higher cells first)  -> stored as -Y to keep ascending compare
+    //   tertiary : packed key ascending (stable tiebreak)
+    private readonly record struct RelayCandidateRank(int Distance, int NegY, long Key) : IComparable<RelayCandidateRank>
+    {
+        public int CompareTo(RelayCandidateRank other)
+        {
+            int c = Distance.CompareTo(other.Distance);
+            if (c != 0) return c;
+            c = NegY.CompareTo(other.NegY);
+            if (c != 0) return c;
+            return Key.CompareTo(other.Key);
+        }
+    }
+
+    private sealed class ReverseRelayCandidateRankComparer : IComparer<RelayCandidateRank>
+    {
+        public int Compare(RelayCandidateRank x, RelayCandidateRank y) => y.CompareTo(x);
+    }
+
+    private readonly record struct RelayCandidateEntry(long Key, BlockPos Pos, RelayCandidateRank Rank);
+
+    // Trim ordering: newest promotions (largest PromotedAtMs) and farthest-from-seed (largest
+    // distance squared) are released first. Natural CompareTo order is ascending; with a default
+    // PriorityQueue (min-heap) of size K, the K largest entries (= worst, evict first) survive
+    // and the smallest of those sits at the root for cheap eviction comparisons.
+    private readonly record struct TrimCandidateRank(long PromotedAtMs, long DistSq) : IComparable<TrimCandidateRank>
+    {
+        public int CompareTo(TrimCandidateRank other)
+        {
+            int c = PromotedAtMs.CompareTo(other.PromotedAtMs);
+            if (c != 0) return c;
+            return DistSq.CompareTo(other.DistSq);
+        }
+    }
 }

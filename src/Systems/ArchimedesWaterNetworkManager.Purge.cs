@@ -71,6 +71,7 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         sourceOwnerByPos.Clear();
+        ownedKeysByController.Clear();
         unownedCleanupCooldownUntilMsByKey.Clear();
         controllerOwnedById.Clear();
         controllerRelaySourceKeys.Clear();
@@ -184,6 +185,7 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         sourceOwnerByPos.Clear();
+        ownedKeysByController.Clear();
         unownedCleanupCooldownUntilMsByKey.Clear();
         controllerOwnedById.Clear();
         controllerRelaySourceKeys.Clear();
@@ -217,11 +219,11 @@ public sealed partial class ArchimedesWaterNetworkManager
             anchorKeys.Add(key);
         }
 
-        foreach (int[] flatPositions in controllerOwnedById.Values)
+        foreach (HashSet<long> keys in ownedKeysByController.Values)
         {
-            foreach (BlockPos pos in ArchimedesPositionCodec.DecodePositions(flatPositions))
+            foreach (long key in keys)
             {
-                anchorKeys.Add(ArchimedesPosKey.Pack(pos));
+                anchorKeys.Add(key);
             }
         }
 
@@ -282,10 +284,13 @@ public sealed partial class ArchimedesWaterNetworkManager
             return;
         }
 
-        CollectConnectedManagedWater(pos, out Dictionary<long, BlockPos> connectedWater);
-        foreach (long key in connectedWater.Keys)
+        HashSet<long> connectedKeys = purgeComponentKeysScratch;
+        CollectConnectedManagedWaterKeysOnly(pos, connectedKeys);
+        foreach (long key in connectedKeys)
         {
             allWaterKeys.Add(key);
         }
     }
+
+    private readonly HashSet<long> purgeComponentKeysScratch = new();
 }
