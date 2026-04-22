@@ -13,7 +13,7 @@ public static class ArchimedesAqueductDetector
     public static bool IsHardcoreWaterAqueduct(Block solid)
     {
         AssetLocation? code = solid.Code;
-        if (code == null || !string.Equals(code.Domain, "hardcorewater", StringComparison.Ordinal))
+        if (code == null || !string.Equals(code.Domain, "hardcorewaterforked", StringComparison.Ordinal))
         {
             return false;
         }
