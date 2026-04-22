@@ -37,6 +37,16 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private readonly PriorityQueue<long, RelayCandidateRank> relayTopKScratch = new(new ReverseRelayCandidateRankComparer());
     private readonly List<RelayCandidateEntry> relayCandidateOrderedScratch = new();
 
+    // Oversample factor: the deterministic top-K heap keeps this many fallback candidates per
+    // budget slot so the consumer loop can skip rejections (IsRelayCreationCandidate, other-owner,
+    // cooldown, assign-failed) without stalling propagation. With MaxRelayPromotionsPerTick = 1 a
+    // single bad candidate would otherwise wedge relay propagation at aqueduct step-down cells.
+    private const int RelayShortlistOversampleMultiplier = 64;
+    private const int RelayShortlistMinCapacity = 32;
+
+    private static int ComputeRelayShortlistCapacity(int maxCreateAllowed)
+        => Math.Max(maxCreateAllowed * RelayShortlistOversampleMultiplier, RelayShortlistMinCapacity);
+
     // Reusable scratch for top-K trim selection. Default min-heap behaviour: we keep the K worst
     // (largest natural rank) entries; the smallest of that set sits at the top and is evicted
     // when a strictly worse incumbent arrives.
@@ -987,9 +997,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         bool useRandomBucket = IsRandomWithinDistanceBucketMode();
+        int shortlistCapacity = ComputeRelayShortlistCapacity(maxCreateAllowed);
         IEnumerable<RelayCandidateEntry> orderedCandidates = useRandomBucket
             ? EnumerateRelayCandidatesRandomBucket(distanceByKey, connectedWater, BuildRelayOrderingSeed())
-            : SelectTopKRelayCandidatesDeterministic(distanceByKey, connectedWater, maxCreateAllowed);
+            : SelectTopKRelayCandidatesDeterministic(distanceByKey, connectedWater, maxCreateAllowed, shortlistCapacity);
 
         int candidatesExamined = 0;
         int rejectedCooldown = 0;
@@ -1049,6 +1060,13 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ArchimedesPerf.AddCount("controller.relayCandidates.rejectedOtherOwner", rejectedOtherOwner);
         ArchimedesPerf.AddCount("controller.relayCandidates.rejectedNotCandidate", rejectedNotCandidate);
         ArchimedesPerf.AddCount("controller.relayCandidates.rejectedAssignFailed", rejectedAssignFailed);
+        // Surface silent stalls: if the shortlist yielded candidates but the consumer loop could
+        // not promote any, the heap capacity or pre-filters likely need to widen. Healthy networks
+        // should leave this counter at zero.
+        if (created == 0 && candidatesExamined > 0)
+        {
+            ArchimedesPerf.AddCount("controller.relayCandidates.shortlistAllRejected");
+        }
         if (created > 0)
         {
             UpdateSnapshot();
@@ -1059,17 +1077,28 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     /// <summary>
     /// Single-pass top-K selection over <paramref name="distanceByKey"/> using a bounded max-heap of
-    /// size <paramref name="maxCreateAllowed"/>. Cheap pre-filter (distance &gt; 0, present in the
-    /// connected map, not already promoted) prunes the candidate set before the heap. The heap is
-    /// then drained and sorted ascending so callers iterate best-first.
+    /// size <paramref name="shortlistCapacity"/>. Cheap pre-filter (distance &gt; 0, present in the
+    /// connected map, not already promoted or owned, not cooldown-active, not owned by another
+    /// controller, fluid is a height-6 relay-flow candidate) prunes the candidate set before the
+    /// heap. The shortlist is sized generously (maxCreateAllowed * oversample) so the consumer
+    /// loop has fallbacks when the expensive IsRelayCreationCandidate rule rejects the head of
+    /// the list. The heap is drained and sorted ascending so callers iterate best-first.
     /// </summary>
     private List<RelayCandidateEntry> SelectTopKRelayCandidatesDeterministic(
         Dictionary<long, int> distanceByKey,
         Dictionary<long, BlockPos> connectedWater,
-        int maxCreateAllowed)
+        int maxCreateAllowed,
+        int shortlistCapacity)
     {
+        _ = maxCreateAllowed; // Kept in signature to mirror the random-bucket path; sizing is driven by shortlistCapacity.
         relayTopKScratch.Clear();
         relayCandidateOrderedScratch.Clear();
+        if (shortlistCapacity <= 0 || Api == null || waterManager == null)
+        {
+            return relayCandidateOrderedScratch;
+        }
+
+        IBlockAccessor accessor = Api.World.BlockAccessor;
         foreach ((long key, int distance) in distanceByKey)
         {
             if (distance <= 0)
@@ -1087,8 +1116,34 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 continue;
             }
 
+            // Skip cells this controller already owns as primary sources (height-7). They would
+            // fail IsRelayCreationCandidate on the fluid-height check and burn a shortlist slot.
+            if (ownedPositions.ContainsKey(key))
+            {
+                continue;
+            }
+
+            if (IsLocalSourceCooldownActive(key))
+            {
+                continue;
+            }
+
+            if (waterManager.TryGetSourceOwner(pos, out string ownerId) &&
+                !string.Equals(ownerId, ControllerId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Block-id cache lookup (Phase 5): height-7 sources and non-managed fluids never
+            // qualify as relays, so reject them cheaply before adding to the shortlist.
+            Block fluid = accessor.GetBlock(pos, BlockLayersAccess.Fluid);
+            if (!waterManager.IsArchimedesRelayFlowCandidate(fluid))
+            {
+                continue;
+            }
+
             RelayCandidateRank rank = new(distance, -pos.Y, key);
-            if (relayTopKScratch.Count < maxCreateAllowed)
+            if (relayTopKScratch.Count < shortlistCapacity)
             {
                 relayTopKScratch.Enqueue(key, rank);
                 continue;

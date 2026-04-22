@@ -166,7 +166,7 @@
         "ingui": "archimedes_screw:config-max-relay-promotions-per-tick",
         "weight": 4.7,
         "comment": "Maximum relay source creations/removals per controller tick.",
-        "default": 1,
+        "default": 12,
         "range": {
           "min": 1,
           "max": 32,

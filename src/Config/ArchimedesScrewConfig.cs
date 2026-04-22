@@ -57,7 +57,7 @@ public sealed class ArchimedesScrewConfig
         /// <summary>
         /// Max relay source promotions (and trims) per controller tick.
         /// </summary>
-        public int MaxRelayPromotionsPerTick { get; set; } = 1;
+        public int MaxRelayPromotionsPerTick { get; set; } = 12;
 
         /// <summary>
         /// Absolute max relay-created sources one controller may own at full power.
