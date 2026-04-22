@@ -142,8 +142,8 @@ public sealed partial class ArchimedesWaterNetworkManager
                 continue;
             }
 
-            int centerChunkX = (int)Math.Floor(player.Entity.ServerPos.X / chunkSize);
-            int centerChunkZ = (int)Math.Floor(player.Entity.ServerPos.Z / chunkSize);
+            int centerChunkX = (int)Math.Floor(player.Entity.Pos.X / chunkSize);
+            int centerChunkZ = (int)Math.Floor(player.Entity.Pos.Z / chunkSize);
             for (int dx = -radius; dx <= radius; dx++)
             {
                 for (int dz = -radius; dz <= radius; dz++)

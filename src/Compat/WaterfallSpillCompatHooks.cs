@@ -1,11 +1,10 @@
-using System;
-using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
+using Vintagestory.GameContent;
 
 namespace ArchimedesScrew;
 
@@ -20,7 +19,7 @@ internal static class WaterfallCompatPatch
     [HarmonyPrepare]
     static bool Prepare()
     {
-        resolvedTargetMethod = ResolveWaterfallSpillMethod();
+        resolvedTargetMethod = ResolveBlockLiquidContainerSpillContents();
         if (resolvedTargetMethod != null)
         {
             loggedResolveFailure = false;
@@ -30,7 +29,7 @@ internal static class WaterfallCompatPatch
         if (!loggedResolveFailure)
         {
             Api?.Logger.Warning(
-                "{0} [compat/waterfall] Could not resolve Waterfall spill target; patch class skipped this pass",
+                "{0} [compat/waterfall] Could not resolve BlockLiquidContainerBase.SpillContents; patch class skipped this pass",
                 ArchimedesScrewModSystem.LogPrefix
             );
             loggedResolveFailure = true;
@@ -44,9 +43,10 @@ internal static class WaterfallCompatPatch
         return resolvedTargetMethod!;
     }
 
+    // Waterfall 1.1.0 patches BlockLiquidContainerBase.SpillContents; we patch the same method.
+    // Returning false skips later prefixes (including Waterfall) and the original; __result is the bool return value.
     [HarmonyPrefix]
-    // Patch target: Waterfall.SpillContents(ItemSlot, EntityAgent, BlockSelection, ref bool)
-    // If this returns false, Waterfall's prefix body is skipped; setting __result=true keeps original spill flow alive.
+    [HarmonyPriority(-100)]
     public static bool Prefix(ItemSlot containerSlot, EntityAgent byEntity, BlockSelection blockSel, ref bool __result)
     {
         if (byEntity?.World == null || blockSel == null)
@@ -93,109 +93,18 @@ internal static class WaterfallCompatPatch
                ArchimedesWaterFamilies.IsManagedWater(block);
     }
 
-    private static MethodInfo? ResolveWaterfallSpillMethod()
+    private static MethodInfo? ResolveBlockLiquidContainerSpillContents()
     {
-        Type? waterfallType = AccessTools.TypeByName("Waterfall");
-        if (waterfallType == null)
-        {
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        // SpillContents exists on the game DLL type but is not in the compile-time API surface here.
+        return AccessTools.Method(
+            typeof(BlockLiquidContainerBase),
+            "SpillContents",
+            new[]
             {
-                waterfallType = assembly.GetType("Waterfall", throwOnError: false, ignoreCase: false);
-                if (waterfallType != null)
-                {
-                    break;
-                }
+                typeof(ItemSlot),
+                typeof(EntityAgent),
+                typeof(BlockSelection),
             }
-        }
-
-        if (waterfallType != null)
-        {
-            MethodInfo? direct = FindSpillMethodOnType(waterfallType);
-            if (direct != null)
-            {
-                return direct;
-            }
-        }
-
-        // Broad fallback: scan all types across loaded assemblies, skipping well-known large
-        // system and game-engine assemblies that can never contain the Waterfall spill method.
-        foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            string assemblyName = assembly.GetName().Name ?? string.Empty;
-            if (assemblyName.StartsWith("System", StringComparison.OrdinalIgnoreCase) ||
-                assemblyName.StartsWith("Microsoft", StringComparison.OrdinalIgnoreCase) ||
-                assemblyName.StartsWith("netstandard", StringComparison.OrdinalIgnoreCase) ||
-                assemblyName.StartsWith("Vintagestory", StringComparison.OrdinalIgnoreCase) ||
-                assemblyName.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            Type[] types;
-            try
-            {
-                types = assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException ex)
-            {
-                types = ex.Types.Where(t => t != null).Cast<Type>().ToArray();
-            }
-
-            foreach (Type type in types)
-            {
-                MethodInfo? candidate = FindSpillMethodOnType(type);
-                if (candidate != null)
-                {
-                    if (DebugLoggingEnabled)
-                    {
-                        Api?.Logger.Notification(
-                            "{0} [compat/waterfall] Fallback target resolution succeeded: {1}.{2}",
-                            ArchimedesScrewModSystem.LogPrefix,
-                            type.FullName ?? "<unknown>",
-                            candidate.Name
-                        );
-                    }
-                    return candidate;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static MethodInfo? FindSpillMethodOnType(Type type)
-    {
-        foreach (MethodInfo method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
-        {
-            if (!string.Equals(method.Name, "SpillContents", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (IsSpillMethodSignatureMatch(method))
-            {
-                return method;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsSpillMethodSignatureMatch(MethodInfo method)
-    {
-        ParameterInfo[] p = method.GetParameters();
-        if (p.Length != 4 || method.ReturnType != typeof(bool))
-        {
-            return false;
-        }
-
-        if (p[0].ParameterType.Name != "ItemSlot" ||
-            p[1].ParameterType.Name != "EntityAgent" ||
-            p[2].ParameterType.Name != "BlockSelection")
-        {
-            return false;
-        }
-
-        return p[3].ParameterType.IsByRef && p[3].ParameterType.GetElementType() == typeof(bool);
+        );
     }
 }

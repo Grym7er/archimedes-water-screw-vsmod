@@ -20,6 +20,9 @@
     "debugControllerStatsOnInteract": false,
     "enableWaterfallCompat": true,
     "waterfallCompatDebug": false,
-    "verboseDebug": false
+    "verboseDebug": false,
+    "enableLegacyFootprintSweep": true,
+    "legacyFootprintMaxKeys": 16384,
+    "legacyFootprintSweepKeysPerTick": 16
   }
 }

@@ -1523,6 +1523,54 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return ReleaseSourceOwner(controllerId, pos);
     }
 
+    /// <summary>
+    /// Attempts adoption by the nearest active controller, otherwise removes unowned managed source fluid.
+    /// Skips cells that are still owned or relay-tracked in the manager.
+    /// </summary>
+    /// <returns>True if managed source fluid was removed from the world.</returns>
+    public bool TryAdoptOrRemoveUnownedArchimedesSource(BlockPos pos)
+    {
+        long key = ArchimedesPosKey.Pack(pos);
+        if (sourceOwnerByPos.ContainsKey(key))
+        {
+            unownedCleanupCooldownUntilMsByKey.Remove(key);
+            return false;
+        }
+
+        if (relayOwnerByPos.ContainsKey(key))
+        {
+            return false;
+        }
+
+        long nowMs = Environment.TickCount64;
+        if (unownedCleanupCooldownUntilMsByKey.TryGetValue(key, out long retryAtMs) && nowMs < retryAtMs)
+        {
+            return false;
+        }
+
+        Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (!IsArchimedesSourceBlock(fluid))
+        {
+            unownedCleanupCooldownUntilMsByKey.Remove(key);
+            return false;
+        }
+
+        if (TryResolveManagedWaterFamily(fluid, out string familyId) &&
+            AssignNearestActiveControllerForNewSource(
+                pos,
+                familyId,
+                reason: "cleanup-unowned adoption"))
+        {
+            unownedCleanupCooldownUntilMsByKey.Remove(key);
+            return false;
+        }
+
+        SuppressRemovalNotification(key);
+        RemoveFluidAndNotifyNeighbours(pos);
+        unownedCleanupCooldownUntilMsByKey[key] = nowMs + UnownedCleanupRetryCooldownMs;
+        return true;
+    }
+
     public int CleanupUnownedManagedSourcesAroundAnchors(IReadOnlyCollection<BlockPos> anchors, int maxRemovals)
     {
         int budget = Math.Max(0, maxRemovals);
@@ -1549,41 +1597,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                     continue;
                 }
 
-                if (sourceOwnerByPos.ContainsKey(key))
+                if (TryAdoptOrRemoveUnownedArchimedesSource(pos))
                 {
-                    unownedCleanupCooldownUntilMsByKey.Remove(key);
-                    continue;
+                    removed++;
                 }
-
-                long nowMs = Environment.TickCount64;
-                if (unownedCleanupCooldownUntilMsByKey.TryGetValue(key, out long retryAtMs) && nowMs < retryAtMs)
-                {
-                    continue;
-                }
-
-                Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-                if (!IsArchimedesSourceBlock(fluid))
-                {
-                    unownedCleanupCooldownUntilMsByKey.Remove(key);
-                    continue;
-                }
-
-                // If this source is connected to active controller output, prefer ownership adoption
-                // over destructive cleanup to avoid visible delete/recreate churn.
-                if (TryResolveManagedWaterFamily(fluid, out string familyId) &&
-                    AssignNearestActiveControllerForNewSource(
-                        pos,
-                        familyId,
-                        reason: "cleanup-unowned adoption"))
-                {
-                    unownedCleanupCooldownUntilMsByKey.Remove(key);
-                    continue;
-                }
-
-                SuppressRemovalNotification(key);
-                RemoveFluidAndNotifyNeighbours(pos);
-                unownedCleanupCooldownUntilMsByKey[key] = nowMs + UnownedCleanupRetryCooldownMs;
-                removed++;
             }
         }
 

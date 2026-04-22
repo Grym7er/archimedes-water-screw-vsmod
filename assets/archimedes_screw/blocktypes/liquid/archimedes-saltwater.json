@@ -46,7 +46,7 @@
   "drawtype": "liquid",
   "renderpass": "liquid",
   "matterstate": "liquid",
-  "blockmaterial": "liquid",
+  "blockmaterial": "water",
   "faceCullMode": "liquid",
   "liquidCode": "saltwater",
   "snowCoverage": false,
@@ -160,5 +160,11 @@
         "particleModel": "Quad"
       }
     ]
-  }
+  },
+	"heldTpIdleAnimation": "holdbothhandslarge", "heldRightReadyAnimation": "heldblockready", "heldTpUseAnimation": "twohandplaceblock",
+	"tpHandTransform": {
+		"translation": { "x": -1.23, "y": -0.91, "z": -0.8 },
+		"rotation": { "x": -2, "y": 25, "z": -78 },
+		"scale": 0.4
+	}
 }

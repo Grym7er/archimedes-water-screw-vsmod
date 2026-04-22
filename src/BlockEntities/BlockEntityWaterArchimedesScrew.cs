@@ -31,6 +31,15 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private readonly Dictionary<long, BlockPos> ownedPositions = new();
     private readonly Dictionary<long, BlockPos> relayOwnedPositions = new();
 
+    /// <summary>
+    /// In-memory FIFO-capped set of fluid cells this controller ever registered as owned or relay sources.
+    /// After drain completes, <see cref="MaybeRunLegacyFootprintSweep"/> revisits them to adopt or remove YYNNN orphans.
+    /// </summary>
+    private readonly HashSet<long> legacyFootprintKeys = new();
+
+    private readonly Queue<long> legacyFootprintQueue = new();
+    private readonly BlockPos legacyFootprintUnpackScratch = new(0);
+
     // Reusable scratch for top-K relay-candidate selection. Reverse comparer turns the priority
     // queue into a bounded max-heap: we only keep the K best candidates (smallest natural rank),
     // so the worst entry sits at the top and gets evicted when a better candidate arrives.
@@ -133,9 +142,32 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         ApplyRelayCapStateAfterLoadOrPlacement();
 
+        SeedLegacyFootprintFromCurrentTracking();
+
         nextCentralWaterTickDueMs = 0;
         nextRelayCreationDueMs = 0;
         UpdateCentralTickRegistration();
+    }
+
+    /// <summary>
+    /// Rebuilds legacy footprint from already-restored owned/relay maps (NBT does not store the footprint).
+    /// </summary>
+    private void SeedLegacyFootprintFromCurrentTracking()
+    {
+        if (waterConfig is not { EnableLegacyFootprintSweep: true })
+        {
+            return;
+        }
+
+        foreach (BlockPos p in ownedPositions.Values)
+        {
+            RecordLegacyFootprint(p);
+        }
+
+        foreach (BlockPos p in relayOwnedPositions.Values)
+        {
+            RecordLegacyFootprint(p);
+        }
     }
 
     public override void OnBlockPlaced(ItemStack? byItemStack = null)
@@ -338,6 +370,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         ownedPositions[key] = pos.Copy();
+        RecordLegacyFootprint(pos);
         UpdateSnapshot();
         Log("Assigned source at {0} ({1})", pos, reason);
     }
@@ -370,8 +403,95 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         relayPromotedAtMsByKey.Clear();
     }
 
+    private void ClearLegacyFootprint()
+    {
+        legacyFootprintKeys.Clear();
+        legacyFootprintQueue.Clear();
+    }
+
+    /// <summary>
+    /// Records a fluid cell for post-drain orphan cleanup. Not persisted (lost on chunk unload).
+    /// FIFO-evicts oldest keys when over <see cref="ArchimedesScrewConfig.WaterConfig.LegacyFootprintMaxKeys"/>.
+    /// </summary>
+    private void RecordLegacyFootprint(BlockPos pos)
+    {
+        if (waterConfig is not { EnableLegacyFootprintSweep: true })
+        {
+            return;
+        }
+
+        long key = ArchimedesPosKey.Pack(pos);
+        if (!legacyFootprintKeys.Add(key))
+        {
+            return;
+        }
+
+        legacyFootprintQueue.Enqueue(key);
+        int maxKeys = Math.Clamp(waterConfig.LegacyFootprintMaxKeys, 256, 262144);
+        while (legacyFootprintQueue.Count > maxKeys)
+        {
+            long evicted = legacyFootprintQueue.Dequeue();
+            legacyFootprintKeys.Remove(evicted);
+        }
+    }
+
+    /// <summary>
+    /// When this controller has finished draining (no owned or relay sources), revisits recorded
+    /// footprint positions to let another controller adopt or remove unowned managed source blocks.
+    /// </summary>
+    private void MaybeRunLegacyFootprintSweep()
+    {
+        if (waterConfig is not { EnableLegacyFootprintSweep: true } || waterManager == null)
+        {
+            return;
+        }
+
+        if (Environment.TickCount64 < drainUnsupportedGraceUntilMs)
+        {
+            return;
+        }
+
+        if (ownedPositions.Count > 0 || relayOwnedPositions.Count > 0)
+        {
+            return;
+        }
+
+        if (waterManager.GetOwnedCountForController(ControllerId) > 0 ||
+            waterManager.GetRelayOwnedCountForController(ControllerId) > 0)
+        {
+            return;
+        }
+
+        if (legacyFootprintQueue.Count == 0)
+        {
+            return;
+        }
+
+        int budget = Math.Clamp(waterConfig.LegacyFootprintSweepKeysPerTick, 1, 512);
+        for (int i = 0; i < budget && legacyFootprintQueue.Count > 0; i++)
+        {
+            long key = legacyFootprintQueue.Dequeue();
+            if (!legacyFootprintKeys.Remove(key))
+            {
+                continue;
+            }
+
+            ArchimedesPosKey.Unpack(key, legacyFootprintUnpackScratch);
+            if (!ArchimedesPosKey.IsInBounds(
+                    legacyFootprintUnpackScratch.X,
+                    legacyFootprintUnpackScratch.Y,
+                    legacyFootprintUnpackScratch.Z))
+            {
+                continue;
+            }
+
+            waterManager.TryAdoptOrRemoveUnownedArchimedesSource(legacyFootprintUnpackScratch);
+        }
+    }
+
     public void ClearOwnedStateAfterPurge()
     {
+        ClearLegacyFootprint();
         ownedPositions.Clear();
         ClearAllRelayOwnership();
         wasController = false;
@@ -386,6 +506,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     {
         if (waterManager == null)
         {
+            ClearLegacyFootprint();
             ownedPositions.Clear();
             ClearAllRelayOwnership();
             Log("Release requested for reason '{0}', but water manager is null", reason);
@@ -412,6 +533,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (releaseList.Count == 0)
         {
+            ClearLegacyFootprint();
             waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
             CleanupUnownedManagedSourcesForControllerState();
             Log("Release requested for reason '{0}', but no Archimedes sources were owned", reason);
@@ -432,6 +554,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ClearAllRelayOwnership();
         waterManager.UpdateControllerSnapshot(ControllerId, Pos, Array.Empty<BlockPos>());
         CleanupUnownedManagedSourcesForControllerState();
+        ClearLegacyFootprint();
         MarkDirty();
         Log("Released {0} Archimedes source blocks because {1}", count, reason);
     }
@@ -455,6 +578,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     public override void FromTreeAttributes(ITreeAttribute tree, IWorldAccessor worldAccessForResolve)
     {
         base.FromTreeAttributes(tree, worldAccessForResolve);
+
+        ClearLegacyFootprint();
 
         ControllerId = tree.GetString(ControllerIdKey, ControllerId);
         wasController = tree.GetBool(WasControllerKey, false);
@@ -603,6 +728,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             }
             lowCadenceScanSkipsRemaining--;
             ArchimedesPerf.AddCount("controller.connectivityScan.skipped");
+            MaybeRunLegacyFootprintSweep();
             ScheduleNextWaterTick(ArchimedesScrewControllerSchedule.LowCadence, fastMs, idleMs);
             ArchimedesPerf.MaybeFlush(Api);
             return;
@@ -662,6 +788,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         lowCadenceScanSkipsRemaining = nextSchedule == ArchimedesScrewControllerSchedule.LowCadence
             ? LowCadenceConnectivityScanStride - 1
             : 0;
+        MaybeRunLegacyFootprintSweep();
         ScheduleNextWaterTick(nextSchedule, fastMs, idleMs);
 
         ArchimedesPerf.MaybeFlush(Api);
@@ -845,6 +972,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             sourceFacing
         );
         ownedPositions[ArchimedesPosKey.Pack(seedPos)] = seedPos.Copy();
+        RecordLegacyFootprint(seedPos);
         return changed;
     }
 
@@ -1050,6 +1178,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
             ownedPositions[key] = pos.Copy();
             AddRelayOwnership(key, pos.Copy(), Environment.TickCount64);
+            RecordLegacyFootprint(pos);
             created++;
             ownershipChurnTotal++;
         }
@@ -1333,6 +1462,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             schedule = ArchimedesScrewControllerSchedule.HighCadence;
         }
 
+        MaybeRunLegacyFootprintSweep();
         ScheduleNextWaterTick(schedule, fastMs, idleMs);
     }
 
@@ -1754,6 +1884,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             }
 
             ownedPositions[key] = pos.Copy();
+            RecordLegacyFootprint(pos);
             added++;
         }
 
@@ -1783,6 +1914,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             relayOwnedPositions[key] = pos.Copy();
             // 0 marks "legacy / unknown promotion time" - protected from age-based trim, same as existing restore path.
             relayPromotedAtMsByKey[key] = 0L;
+            RecordLegacyFootprint(pos);
             added++;
         }
 
