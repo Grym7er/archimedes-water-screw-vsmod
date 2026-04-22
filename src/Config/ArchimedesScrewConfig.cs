@@ -100,6 +100,22 @@ public sealed class ArchimedesScrewConfig
         public bool VerboseDebug { get; set; } = false;
 
         /// <summary>
+        /// After this controller has no owned or relay sources, slowly revisits cells that were ever
+        /// owned or relay-promoted (in-memory footprint) to adopt or remove unowned managed source fluid.
+        /// </summary>
+        public bool EnableLegacyFootprintSweep { get; set; } = true;
+
+        /// <summary>
+        /// Max positions tracked per controller for legacy footprint (FIFO evicts oldest).
+        /// </summary>
+        public int LegacyFootprintMaxKeys { get; set; } = 16384;
+
+        /// <summary>
+        /// Max footprint keys processed per controller tick when drain is idle.
+        /// </summary>
+        public int LegacyFootprintSweepKeysPerTick { get; set; } = 16;
+
+        /// <summary>
         /// Copies tunable fields onto this instance so existing references (e.g. block entities) stay valid.
         /// </summary>
         public void CopyValuesFrom(WaterConfig source)
@@ -125,6 +141,9 @@ public sealed class ArchimedesScrewConfig
             EnableWaterfallCompat = source.EnableWaterfallCompat;
             WaterfallCompatDebug = source.WaterfallCompatDebug;
             VerboseDebug = source.VerboseDebug;
+            EnableLegacyFootprintSweep = source.EnableLegacyFootprintSweep;
+            LegacyFootprintMaxKeys = source.LegacyFootprintMaxKeys;
+            LegacyFootprintSweepKeysPerTick = source.LegacyFootprintSweepKeysPerTick;
         }
     }
 }

@@ -9,7 +9,7 @@
     {
       "name": "FiniteSpreadingLiquid",
       "properties": {
-        "spreadDelay": 75,
+        "spreadDelay": 125,
         "liquidCollisionSound": "sizzle",
         "sourceReplacementCode": "rock-obsidian",
         "flowingReplacementCode": "rock-basalt",

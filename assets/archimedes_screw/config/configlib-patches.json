@@ -14,7 +14,9 @@
         "water/vanillaClaimHaloDepth": "VANILLA_CLAIM_HALO_DEPTH",
         "water/intentQueueMaxPerGlobalTick": "INTENT_QUEUE_MAX_PER_GLOBAL_TICK",
         "water/maxRelayPromotionsPerTick": "MAX_RELAY_PROMOTIONS_PER_TICK",
-        "water/maxRelaySourcesPerController": "MAX_RELAY_SOURCES_PER_CONTROLLER"
+        "water/maxRelaySourcesPerController": "MAX_RELAY_SOURCES_PER_CONTROLLER",
+        "water/legacyFootprintMaxKeys": "LEGACY_FOOTPRINT_MAX_KEYS",
+        "water/legacyFootprintSweepKeysPerTick": "LEGACY_FOOTPRINT_SWEEP_KEYS_PER_TICK"
       }
     },
     "boolean": {
@@ -23,7 +25,8 @@
         "water/debugControllerStatsOnInteract": "DEBUG_CONTROLLER_STATS_ON_INTERACT",
         "water/enableWaterfallCompat": "ENABLE_WATERFALL_COMPAT",
         "water/waterfallCompatDebug": "WATERFALL_COMPAT_DEBUG",
-        "water/verboseDebug": "VERBOSE_DEBUG"
+        "water/verboseDebug": "VERBOSE_DEBUG",
+        "water/enableLegacyFootprintSweep": "ENABLE_LEGACY_FOOTPRINT_SWEEP"
       }
     },
     "float": {
@@ -184,6 +187,30 @@
           "max": 2048,
           "step": 1
         }
+      },
+      "LEGACY_FOOTPRINT_MAX_KEYS": {
+        "name": "legacy-footprint-max-keys",
+        "ingui": "archimedes_screw:config-legacy-footprint-max-keys",
+        "weight": 4.85,
+        "comment": "Max positions remembered per screw for post-drain orphan cleanup (FIFO evicts oldest).",
+        "default": 16384,
+        "range": {
+          "min": 256,
+          "max": 262144,
+          "step": 256
+        }
+      },
+      "LEGACY_FOOTPRINT_SWEEP_KEYS_PER_TICK": {
+        "name": "legacy-footprint-sweep-keys-per-tick",
+        "ingui": "archimedes_screw:config-legacy-footprint-sweep-keys-per-tick",
+        "weight": 4.86,
+        "comment": "How many remembered footprint cells to revisit per controller tick after drain completes.",
+        "default": 16,
+        "range": {
+          "min": 1,
+          "max": 512,
+          "step": 1
+        }
       }
     },
     "boolean": {
@@ -221,6 +248,13 @@
         "weight": 6.2,
         "comment": "When enabled, non-essential Archimedes diagnostics are emitted as [VerboseDebug] entries.",
         "default": false
+      },
+      "ENABLE_LEGACY_FOOTPRINT_SWEEP": {
+        "name": "enable-legacy-footprint-sweep",
+        "ingui": "archimedes_screw:config-enable-legacy-footprint-sweep",
+        "weight": 4.84,
+        "comment": "After a screw has no owned or relay sources, slowly revisits remembered cells to adopt or remove orphan managed source fluid (YYNNN).",
+        "default": true
       }
     },
     "float": {
