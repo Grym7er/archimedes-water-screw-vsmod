@@ -9,7 +9,7 @@
     {
       "name": "FiniteSpreadingLiquid",
       "properties": {
-        "spreadDelay": 125,
+        "spreadDelay": 75 ,
         "liquidCollisionSound": "sizzle",
         "sourceReplacementCode": "rock-obsidian",
         "flowingReplacementCode": "rock-basalt",
@@ -19,30 +19,31 @@
     { "name": "Steaming" },
     { "name": "HeatSource", "properties": { "heatStrength": 3 } }
   ],
-  "attributes": {
-    "killPlantRadius": 3,
-    "canStep": false,
-    "insideDamage": 1,
-    "damageType": "Acid",
-    "freezable": false,
-    "smothersFire": true,
-    "pushVectorByType": {
-      "*-n-*": { "x": 0, "y": 0, "z": -0.0015 },
-      "*-ne-*": { "x": 0.0015, "y": 0, "z": -0.0015 },
-      "*-e-*": { "x": 0.0015, "y": 0, "z": 0 },
-      "*-se-*": { "x": 0.0015, "y": 0, "z": 0.0015 },
-      "*-s-*": { "x": 0, "y": 0, "z": 0.0015 },
-      "*-sw-*": { "x": -0.0015, "y": 0, "z": 0.0015 },
-      "*-w-*": { "x": -0.0015, "y": 0, "z": 0 },
-      "*-nw-*": { "x": -0.0015, "y": 0, "z": -0.0015 },
-      "*-d-*": { "x": 0, "y": -0.003, "z": 0 }
-    },
-    "waterTightContainerProps": {
-      "containable": true,
-      "itemsPerLitre": 0.001,
-      "whenFilled": { "stack": { "type": "item", "code": "waterportion" } }
-    }
-  },
+  	"attributes": {
+		"coolingMediumTemperature": 90,
+		"killPlantRadius": 3,
+		"canStep": false,
+		"insideDamage": 1,
+		"damageType": "Acid",
+		"freezable": false,
+		"smothersFire": true,
+		"pushVectorByType": {
+			"*-n-*": { "x": 0, "y": 0, "z": -0.0015 },
+			"*-ne-*": { "x": 0.0015, "y": 0, "z": -0.0015 },
+			"*-e-*": { "x": 0.0015, "y": 0, "z": 0 },
+			"*-se-*": { "x": 0.0015, "y": 0, "z": 0.0015 },
+			"*-s-*": { "x": 0, "y": 0, "z": 0.0015 },
+			"*-sw-*": { "x": -0.0015, "y": 0, "z": 0.0015 },
+			"*-w-*": { "x": -0.0015, "y": 0, "z": 0 },
+			"*-nw-*": { "x": -0.0015, "y": 0, "z": -0.0015 },
+			"*-d-*": { "x": 0, "y": -0.003, "z": 0 }
+		},
+		"waterTightContainerProps": {
+			"containable": true,
+			"itemsPerLitre": 0.001,
+			"whenFilled": { "stack": { "type": "item", "code": "waterportion" } }
+		}
+	},
   "shape": { "base": "game:block/basic/cube" },
   "variantgroups": [
     { "code": "flow", "states": ["n", "ne", "e", "se", "s", "sw", "w", "nw", "d", "still"] },
@@ -51,7 +52,7 @@
   "drawtype": "liquid",
   "renderpass": "liquid",
   "matterstate": "liquid",
-  "blockmaterial": "liquid",
+  "blockmaterial": "water",
   "faceCullMode": "liquid",
   "liquidCode": "boilingwater",
   "snowCoverage": false,
@@ -165,5 +166,11 @@
         "particleModel": "Quad"
       }
     ]
-  }
+  },
+  "heldTpIdleAnimation": "holdbothhandslarge", "heldRightReadyAnimation": "heldblockready", "heldTpUseAnimation": "twohandplaceblock",
+	"tpHandTransform": {
+		"translation": { "x": -1.23, "y": -0.91, "z": -0.8 },
+		"rotation": { "x": -2, "y": 25, "z": -78 },
+		"scale": 0.4
+	}
 }
