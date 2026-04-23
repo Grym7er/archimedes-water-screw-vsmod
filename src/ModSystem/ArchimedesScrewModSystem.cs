@@ -218,6 +218,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
         }
 
         WaterManager?.Dispose();
+        ArchimedesPosKey.ResetForWorldUnload();
         waterfallCompatBridge?.Dispose();
         if (sapi != null && waterDebugTickListenerId != 0)
         {

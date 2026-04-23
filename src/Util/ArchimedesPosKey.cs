@@ -5,7 +5,8 @@ namespace ArchimedesScrew;
 
 /// <summary>
 /// Packed runtime position key for hot-path dictionary/set usage.
-/// Layout is initialized once per world from runtime map sizes and remains immutable.
+/// Layout is initialized per loaded world from runtime map sizes. Call <see cref="ResetForWorldUnload"/>
+/// when the server world is torn down so a later world with different map bounds can re-initialize.
 /// </summary>
 public static class ArchimedesPosKey
 {
@@ -64,6 +65,27 @@ public static class ArchimedesPosKey
         xMask = MaskForBits(xBits);
         initialized = true;
         RunInitializationSelfChecks();
+    }
+
+    /// <summary>
+    /// Clears static layout state after server world unload. Safe to call multiple times (idempotent).
+    /// Call only when no code still relies on packed keys from the previous world (typically after
+    /// <see cref="ArchimedesWaterNetworkManager"/> disposal).
+    /// </summary>
+    public static void ResetForWorldUnload()
+    {
+        initialized = false;
+        mapSizeX = 0;
+        mapSizeY = 0;
+        mapSizeZ = 0;
+        zBits = 0;
+        yBits = 0;
+        xBits = 0;
+        yShift = 0;
+        xShift = 0;
+        zMask = 0;
+        yMask = 0;
+        xMask = 0;
     }
 
     public static long Pack(BlockPos pos)

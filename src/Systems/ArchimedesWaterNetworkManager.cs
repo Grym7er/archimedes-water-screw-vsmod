@@ -126,6 +126,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     {
         StopCentralWaterTick();
         StopPostLoadReactivation();
+        ArchimedesPosKey.ResetForWorldUnload();
         GC.SuppressFinalize(this);
     }
 
