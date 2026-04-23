@@ -22,7 +22,8 @@ Enable robust interoperability with `hardcorewater` so that:
 - `src/ModSystem/ArchimedesScrewModSystem.cs`
 - existing compat pattern in:
   - `src/Compat/WaterfallCompatBridge.cs`
-  - `src/Compat/WaterfallSpillCompatHooks.cs`
+  - `src/Compat/WaterfallSpillTranspilerPatch.cs`
+  - `src/Compat/WaterfallSpillFluidKind.cs`
 
 ### HardcoreWater (`vs-hardcorewater`)
 

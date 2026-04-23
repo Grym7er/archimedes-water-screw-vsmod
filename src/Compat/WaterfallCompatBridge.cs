@@ -19,8 +19,8 @@ internal sealed class WaterfallCompatBridge : IDisposable
 
     public void RefreshForConfig(ArchimedesScrewConfig.WaterConfig waterConfig)
     {
-        WaterfallCompatPatch.Api = api;
-        WaterfallCompatPatch.DebugLoggingEnabled = waterConfig.WaterfallCompatDebug;
+        WaterfallSpillTranspilerPatch.Api = api;
+        WaterfallSpillTranspilerPatch.DebugLoggingEnabled = waterConfig.WaterfallCompatDebug;
 
         if (!waterConfig.EnableWaterfallCompat)
         {
@@ -41,7 +41,16 @@ internal sealed class WaterfallCompatBridge : IDisposable
             return;
         }
 
-        harmony.CreateClassProcessor(typeof(WaterfallCompatPatch)).Patch();
+        harmony.CreateClassProcessor(typeof(WaterfallSpillTranspilerPatch)).Patch();
+        if (!WaterfallSpillTranspilerPatch.LastPrepareSucceeded)
+        {
+            ArchimedesScrewModSystem.LogVerboseOrNotification(
+                api.Logger,
+                "{0} [compat/waterfall] Harmony skipped transpiler (Waterfall type/method not ready); will retry on later config refresh",
+                ArchimedesScrewModSystem.LogPrefix);
+            return;
+        }
+
         isPatched = true;
         ArchimedesScrewModSystem.LogVerboseOrNotification(api.Logger, "{0} [compat/waterfall] Compat patch set active", ArchimedesScrewModSystem.LogPrefix);
     }

@@ -8,7 +8,6 @@
   "description": "Adds a mechanically powered Archimedes screw that can pump water against gravity.",
   "version": "0.1.34",
   "dependencies": {
-    "game": "1.22.0",
-    "survival": "1.22.0"
+    "game": "1.22.0"
   }
 }
