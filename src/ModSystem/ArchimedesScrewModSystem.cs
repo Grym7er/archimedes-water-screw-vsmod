@@ -37,6 +37,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     private ArchimedesScrewConfig.WaterConfig? pendingWaterConfig;
     private bool pendingRequiresCentralTickRestart;
     private WaterfallCompatBridge? waterfallCompatBridge;
+    private WaterSourceRegenCompatBridge? waterSourceRegenCompatBridge;
     private ArchimedesWaterDebugOverlay? waterDebugOverlay;
     private long waterDebugTickListenerId;
     private bool waterDebugEnabled;
@@ -107,7 +108,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     {
         ArchimedesScrewConfig.WaterConfig w = config.Water;
         api.Logger.Notification(
-            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, maxVanillaConversionPasses={9}, vanillaClaimHaloDepth={10}, intentQueueMaxPerGlobalTick={11}, enableRelaySources={12}, maxRelayPromotionsPerTick={13}, maxRelaySourcesPerController={14}, requiredMechPowerForMaxRelay={15}, relayPowerHysteresisPct={16}, relayCandidateOrderingMode={17}, debugControllerStatsOnInteract={18}, enableWaterfallCompat={19}, waterfallCompatDebug={20}, verboseDebug={21}, enableLegacyFootprintSweep={22}, legacyFootprintMaxKeys={23}, legacyFootprintSweepKeysPerTick={24}",
+            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, vanillaClaimHaloDepth={9}, intentQueueMaxPerGlobalTick={10}, enableRelaySources={11}, maxRelayPromotionsPerTick={12}, maxRelaySourcesPerController={13}, requiredMechPowerForMaxRelay={14}, relayPowerHysteresisPct={15}, relayCandidateOrderingMode={16}, debugControllerStatsOnInteract={17}, enableWaterfallCompat={18}, waterfallCompatDebug={19}, verboseDebug={20}",
             LogPrefix,
             w.FastTickMs,
             w.IdleTickMs,
@@ -117,7 +118,6 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             w.MaxBlocksPerStep,
             w.MaxScrewLength,
             w.MinimumNetworkSpeed,
-            w.MaxVanillaConversionPasses,
             w.VanillaClaimHaloDepth,
             w.IntentQueueMaxPerGlobalTick,
             w.EnableRelaySources,
@@ -129,10 +129,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             w.DebugControllerStatsOnInteract,
             w.EnableWaterfallCompat,
             w.WaterfallCompatDebug,
-            w.VerboseDebug,
-            w.EnableLegacyFootprintSweep,
-            w.LegacyFootprintMaxKeys,
-            w.LegacyFootprintSweepKeysPerTick
+            w.VerboseDebug
         );
     }
 
@@ -174,6 +171,8 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
         WaterManager = new ArchimedesWaterNetworkManager(api, Config);
         WaterManager.StartCentralWaterTick();
+        waterSourceRegenCompatBridge = new WaterSourceRegenCompatBridge(api);
+        waterSourceRegenCompatBridge.EnsurePatched();
         waterfallCompatBridge = new WaterfallCompatBridge(api);
         waterfallCompatBridge.RefreshForConfig(Config.Water);
         api.Logger.Notification("{0} Server side initialized (central water tick)", LogPrefix);
@@ -219,12 +218,14 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
         WaterManager?.Dispose();
         ArchimedesPosKey.ResetForWorldUnload();
+        waterSourceRegenCompatBridge?.Dispose();
         waterfallCompatBridge?.Dispose();
         if (sapi != null && waterDebugTickListenerId != 0)
         {
             sapi.Event.UnregisterGameTickListener(waterDebugTickListenerId);
             waterDebugTickListenerId = 0;
         }
+        waterSourceRegenCompatBridge = null;
         waterfallCompatBridge = null;
         WaterManager = null;
         base.Dispose();
@@ -625,9 +626,6 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             case "MAX_SCREW_LENGTH":
                 target.MaxScrewLength = tree.GetInt("value");
                 return true;
-            case "MAX_VANILLA_CONVERSION_PASSES":
-                target.MaxVanillaConversionPasses = tree.GetInt("value");
-                return true;
             case "VANILLA_CLAIM_HALO_DEPTH":
                 target.VanillaClaimHaloDepth = tree.GetInt("value");
                 return true;
@@ -666,15 +664,6 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 return true;
             case "VERBOSE_DEBUG":
                 target.VerboseDebug = tree.GetBool("value");
-                return true;
-            case "ENABLE_LEGACY_FOOTPRINT_SWEEP":
-                target.EnableLegacyFootprintSweep = tree.GetBool("value");
-                return true;
-            case "LEGACY_FOOTPRINT_MAX_KEYS":
-                target.LegacyFootprintMaxKeys = tree.GetInt("value");
-                return true;
-            case "LEGACY_FOOTPRINT_SWEEP_KEYS_PER_TICK":
-                target.LegacyFootprintSweepKeysPerTick = tree.GetInt("value");
                 return true;
             default:
                 return false;

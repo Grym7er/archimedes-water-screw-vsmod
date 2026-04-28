@@ -20,7 +20,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
     private const int MaxBfsVisited = 16384;
     private const int UnownedCleanupRetryCooldownMs = 3000;
-    private const int ManagedAdoptionCooldownAfterReleaseMs = 2500;
     private const int DrainQuarantineMs = 1500;
     private const int DrainQuarantinePruneIntervalMs = 1000;
 
@@ -45,7 +44,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private readonly Dictionary<string, HashSet<long>> ownedKeysByController = new(StringComparer.Ordinal);
     /// <summary>Reusable scratch list for <c>ReplaceSourceOwnershipForController</c> stale-key collection.</summary>
     private readonly List<long> replaceOwnershipStaleScratch = new();
-    private readonly Dictionary<long, long> managedAdoptionCooldownUntilMsByKey = new();
     private readonly Dictionary<long, long> unownedCleanupCooldownUntilMsByKey = new();
     private readonly Dictionary<long, long> drainQuarantineUntilMsByKey = new();
     /// <summary>Reusable scratch list used by <see cref="PruneExpiredDrainQuarantine"/> to avoid
@@ -1260,7 +1258,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         bool changed = false;
-        managedAdoptionCooldownUntilMsByKey.Remove(key);
         if (!sourceOwnerByPos.TryGetValue(key, out string? existingOwner) ||
             !string.Equals(existingOwner, ownerId, StringComparison.Ordinal))
         {
@@ -1495,7 +1492,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
         ClearSourceOwnerInternal(key, out _);
         sourceProvenanceByPos.Remove(key);
-        managedAdoptionCooldownUntilMsByKey[key] = Environment.TickCount64 + ManagedAdoptionCooldownAfterReleaseMs;
         if (controllerRelaySourceKeys.TryGetValue(owner, out HashSet<long>? ownerRelayKeys) &&
             ownerRelayKeys.Remove(key) &&
             relayOwnerByPos.TryGetValue(key, out string? currentRelayOwner) &&
@@ -1661,19 +1657,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                     continue;
                 }
 
-                if (!TryConvertVanillaSource(adjacentPos, familyId, ownerHintControllerId))
+                if (TryConvertVanillaSource(adjacentPos, familyId, ownerHintControllerId))
                 {
-                    // A self-sustaining managed source (height 6/7) can appear via fluid simulation
-                    // without passing through our vanilla-conversion path. Adopt ownership
-                    // here so it does not remain unmanaged.
-                    if (TryAdoptManagedSelfSustainingSource(adjacentPos, familyId, ownerHintControllerId))
-                    {
-                        converted++;
-                    }
-                    continue;
+                    converted++;
                 }
-
-                converted++;
             }
         }
 
@@ -1714,7 +1701,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         IReadOnlyList<BlockPos> probeOrigins,
         string familyId,
         string? ownerHintControllerId,
-        bool adoptManagedSelfSustaining = true,
         int maxVisit = MaxBfsVisited)
     {
         if (probeOrigins == null || probeOrigins.Count == 0)
@@ -1803,12 +1789,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             dequeued++;
 
             Block fluid = ba.GetBlock(posScratch, BlockLayersAccess.Fluid);
-            bool isUnownedManagedSelfSustaining =
-                IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
-                !sourceOwnerByPos.ContainsKey(pkey);
             int lockedNeighbors = CountLockedVanillaNeighbors(posScratch, familyId);
 
-            if (isUnownedManagedSelfSustaining &&
+            if (IsManagedSelfSustainingSourceForFamily(fluid, familyId) &&
+                !sourceOwnerByPos.ContainsKey(pkey) &&
                 (IsVanillaLocked(posScratch, familyId) || lockedNeighbors > 0))
             {
                 if (TryGetVanillaEquivalent(fluid, out Block vanillaEquivalent))
@@ -1826,17 +1810,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 TryConvertVanillaSourceForPlayer(posScratch, familyId, "connected-family-fluid sweep (drain context)"))
             {
                 claimed = true;
-            }
-            else if (adoptManagedSelfSustaining &&
-                     !string.IsNullOrWhiteSpace(ownerHintControllerId) &&
-                     isUnownedManagedSelfSustaining &&
-                     !IsManagedAdoptionCoolingDown(pkey, out _))
-            {
-                // Unowned archimedes still blocks (not vanilla water-*) need ownership so drain can release them.
-                if (EnsureSourceOwned(ownerHintControllerId, posScratch, familyId))
-                {
-                    claimed = true;
-                }
             }
 
             if (claimed)
@@ -2122,102 +2095,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private bool CanLiquidsTouch(BlockPos fromPos, BlockPos toPos)
     {
         return ArchimedesFluidHostValidator.CanLiquidsTouchByBarrier(api.World, fromPos, toPos);
-    }
-
-    private bool HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(BlockPos pos, string familyId)
-    {
-        int ownedMatches = 0;
-        BlockPos adjacentPos = new(0);
-        foreach (BlockFacing face in BlockFacing.HORIZONTALS)
-        {
-            int ax = pos.X + face.Normali.X;
-            int ay = pos.Y + face.Normali.Y;
-            int az = pos.Z + face.Normali.Z;
-            if (!ArchimedesPosKey.TryPack(ax, ay, az, out long adjacentKey))
-            {
-                continue;
-            }
-
-            adjacentPos.Set(ax, ay, az);
-            if (!CanLiquidsTouch(pos, adjacentPos))
-            {
-                continue;
-            }
-
-            Block adjacentFluid = api.World.BlockAccessor.GetBlock(adjacentPos, BlockLayersAccess.Fluid);
-            if (!IsArchimedesSelfSustainingSourceBlock(adjacentFluid) ||
-                !TryResolveManagedWaterFamily(adjacentFluid, out string managedFamilyId) ||
-                !string.Equals(managedFamilyId, familyId, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!sourceOwnerByPos.ContainsKey(adjacentKey))
-            {
-                continue;
-            }
-
-            ownedMatches++;
-            if (ownedMatches >= 2)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private bool TryAdoptManagedSelfSustainingSource(BlockPos pos, string familyId, string? ownerHintControllerId)
-    {
-        long key = ArchimedesPosKey.Pack(pos);
-        Block fluidBlock = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        if (!IsManagedSelfSustainingSourceForFamily(fluidBlock, familyId) ||
-            sourceOwnerByPos.ContainsKey(key) ||
-            !HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(pos, familyId))
-        {
-            return false;
-        }
-
-        if (IsManagedAdoptionCoolingDown(key, out _))
-        {
-            return false;
-        }
-
-        bool assigned = false;
-        if (!string.IsNullOrWhiteSpace(ownerHintControllerId))
-        {
-            assigned = EnsureSourceOwned(ownerHintControllerId, pos, familyId);
-        }
-
-        if (!assigned)
-        {
-            assigned = AssignNearestActiveControllerForNewSource(
-                pos,
-                familyId,
-                reason: "managed-self-sustaining ownership adoption"
-            );
-        }
-
-        return assigned;
-    }
-
-    private bool IsManagedAdoptionCoolingDown(long key, out long cooldownRemainingMs)
-    {
-        cooldownRemainingMs = 0;
-        if (!managedAdoptionCooldownUntilMsByKey.TryGetValue(key, out long untilMs))
-        {
-            return false;
-        }
-
-        long nowMs = Environment.TickCount64;
-        if (untilMs <= nowMs)
-        {
-            managedAdoptionCooldownUntilMsByKey.Remove(key);
-            return false;
-        }
-
-        cooldownRemainingMs = untilMs - nowMs;
-        return true;
     }
 
     private T? LoadSerialized<T>(string key)

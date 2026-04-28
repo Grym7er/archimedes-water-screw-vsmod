@@ -35,11 +35,6 @@ public sealed class ArchimedesScrewConfig
         public float MinimumNetworkSpeed { get; set; } = 0.001f;
 
         /// <summary>
-        /// Max rounds of vanilla-source conversion per controller tick (each round expands the managed-water BFS).
-        /// </summary>
-        public int MaxVanillaConversionPasses { get; set; } = 32;
-
-        /// <summary>
         /// Max vanilla traversal depth away from the managed frontier when evaluating claims.
         /// </summary>
         public int VanillaClaimHaloDepth { get; set; } = 2;
@@ -100,22 +95,6 @@ public sealed class ArchimedesScrewConfig
         public bool VerboseDebug { get; set; } = false;
 
         /// <summary>
-        /// After this controller has no owned or relay sources, slowly revisits cells that were ever
-        /// owned or relay-promoted (in-memory footprint) to adopt or remove unowned managed source fluid.
-        /// </summary>
-        public bool EnableLegacyFootprintSweep { get; set; } = true;
-
-        /// <summary>
-        /// Max positions tracked per controller for legacy footprint (FIFO evicts oldest).
-        /// </summary>
-        public int LegacyFootprintMaxKeys { get; set; } = 16384;
-
-        /// <summary>
-        /// Max footprint keys processed per controller tick when drain is idle.
-        /// </summary>
-        public int LegacyFootprintSweepKeysPerTick { get; set; } = 16;
-
-        /// <summary>
         /// Copies tunable fields onto this instance so existing references (e.g. block entities) stay valid.
         /// </summary>
         public void CopyValuesFrom(WaterConfig source)
@@ -128,7 +107,6 @@ public sealed class ArchimedesScrewConfig
             MaxBlocksPerStep = source.MaxBlocksPerStep;
             MaxScrewLength = source.MaxScrewLength;
             MinimumNetworkSpeed = source.MinimumNetworkSpeed;
-            MaxVanillaConversionPasses = source.MaxVanillaConversionPasses;
             VanillaClaimHaloDepth = source.VanillaClaimHaloDepth;
             IntentQueueMaxPerGlobalTick = source.IntentQueueMaxPerGlobalTick;
             EnableRelaySources = source.EnableRelaySources;
@@ -141,9 +119,6 @@ public sealed class ArchimedesScrewConfig
             EnableWaterfallCompat = source.EnableWaterfallCompat;
             WaterfallCompatDebug = source.WaterfallCompatDebug;
             VerboseDebug = source.VerboseDebug;
-            EnableLegacyFootprintSweep = source.EnableLegacyFootprintSweep;
-            LegacyFootprintMaxKeys = source.LegacyFootprintMaxKeys;
-            LegacyFootprintSweepKeysPerTick = source.LegacyFootprintSweepKeysPerTick;
         }
     }
 }

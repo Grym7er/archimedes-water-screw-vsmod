@@ -98,7 +98,7 @@ public sealed partial class ArchimedesWaterNetworkManager
             return false;
         }
 
-        if (!playerIntent && !HasAtLeastTwoOwnedManagedCardinalSourceNeighbors(pos, familyId))
+        if (!playerIntent && !HasAtLeastTwoOwnedManagedCardinalFrontierNeighbors(pos, familyId))
         {
             ArchimedesPerf.AddCount("water.claims.rejected.notFrontier");
             return false;
@@ -227,6 +227,47 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         return true;
+    }
+
+    private bool HasAtLeastTwoOwnedManagedCardinalFrontierNeighbors(BlockPos pos, string familyId)
+    {
+        int ownedMatches = 0;
+        BlockPos adjacentPos = new(0);
+        foreach (BlockFacing face in BlockFacing.HORIZONTALS)
+        {
+            int ax = pos.X + face.Normali.X;
+            int ay = pos.Y + face.Normali.Y;
+            int az = pos.Z + face.Normali.Z;
+            if (!ArchimedesPosKey.TryPack(ax, ay, az, out long adjacentKey))
+            {
+                continue;
+            }
+
+            adjacentPos.Set(ax, ay, az);
+            if (!CanLiquidsTouch(pos, adjacentPos))
+            {
+                continue;
+            }
+
+            Block adjacentFluid = api.World.BlockAccessor.GetBlock(adjacentPos, BlockLayersAccess.Fluid);
+            if (!IsManagedSelfSustainingSourceForFamily(adjacentFluid, familyId))
+            {
+                continue;
+            }
+
+            if (!sourceOwnerByPos.ContainsKey(adjacentKey))
+            {
+                continue;
+            }
+
+            ownedMatches++;
+            if (ownedMatches >= 2)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private readonly record struct ConversionIntent(

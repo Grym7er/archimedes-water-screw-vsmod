@@ -27,6 +27,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private const int TopologyChangeDrainUnsupportedGraceMs = 4000;
     private const int LocalSourceCooldownMs = 2500;
     private const int CooldownPruneIntervalMs = 5000;
+    private const int VanillaConversionPassesPerTick = 32;
+    private const int LegacyFootprintMaxKeys = 16384;
+    private const int LegacyFootprintSweepKeysPerTick = 16;
 
     private readonly Dictionary<long, BlockPos> ownedPositions = new();
     private readonly Dictionary<long, BlockPos> relayOwnedPositions = new();
@@ -154,7 +157,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     /// </summary>
     private void SeedLegacyFootprintFromCurrentTracking()
     {
-        if (waterConfig is not { EnableLegacyFootprintSweep: true })
+        if (waterManager == null)
         {
             return;
         }
@@ -411,11 +414,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     /// <summary>
     /// Records a fluid cell for post-drain orphan cleanup. Not persisted (lost on chunk unload).
-    /// FIFO-evicts oldest keys when over <see cref="ArchimedesScrewConfig.WaterConfig.LegacyFootprintMaxKeys"/>.
+    /// FIFO-evicts oldest keys when over the internal legacy footprint cap.
     /// </summary>
     private void RecordLegacyFootprint(BlockPos pos)
     {
-        if (waterConfig is not { EnableLegacyFootprintSweep: true })
+        if (waterManager == null)
         {
             return;
         }
@@ -427,8 +430,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         legacyFootprintQueue.Enqueue(key);
-        int maxKeys = Math.Clamp(waterConfig.LegacyFootprintMaxKeys, 256, 262144);
-        while (legacyFootprintQueue.Count > maxKeys)
+        while (legacyFootprintQueue.Count > LegacyFootprintMaxKeys)
         {
             long evicted = legacyFootprintQueue.Dequeue();
             legacyFootprintKeys.Remove(evicted);
@@ -441,7 +443,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     /// </summary>
     private void MaybeRunLegacyFootprintSweep()
     {
-        if (waterConfig is not { EnableLegacyFootprintSweep: true } || waterManager == null)
+        if (waterManager == null)
         {
             return;
         }
@@ -467,8 +469,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return;
         }
 
-        int budget = Math.Clamp(waterConfig.LegacyFootprintSweepKeysPerTick, 1, 512);
-        for (int i = 0; i < budget && legacyFootprintQueue.Count > 0; i++)
+        for (int i = 0; i < LegacyFootprintSweepKeysPerTick && legacyFootprintQueue.Count > 0; i++)
         {
             long key = legacyFootprintQueue.Dequeue();
             if (!legacyFootprintKeys.Remove(key))
@@ -658,8 +659,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
             // Unpowered draining releases owned managed sources each tick. Keep seizure active for vanilla
-            // sources (e.g. player bucket placements) but disable managed self-sustaining adoption here to
-            // prevent immediate re-ownership thrash of freshly drained cells.
+            // sources (e.g. player bucket placements) while avoiding outlet refill during drain.
             // Do NOT call EnsureSeedSource here: it refills the outlet via SetManagedSource and blocks drain.
             if (!evaluation.IsPowered &&
                 evaluation.FamilyId != null &&
@@ -672,8 +672,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
                     BuildDrainProbeOriginPositions(evaluation.SeedPos),
                     evaluation.FamilyId,
-                    ControllerId,
-                    adoptManagedSelfSustaining: false);
+                    ControllerId);
             }
 
             HandleInvalidControllerState(evaluation, fastMs, idleMs, forceDrainWhenInvalid: false);
@@ -699,7 +698,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             ? 0
             : waterManager.ConvertAdjacentVanillaSourcesIteratively(
                 seedPos,
-                waterConfig.MaxVanillaConversionPasses,
+                VanillaConversionPassesPerTick,
                 ControllerId
             );
 

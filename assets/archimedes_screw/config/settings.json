@@ -8,7 +8,6 @@
     "maxBlocksPerStep": 1,
     "maxScrewLength": 32,
     "minimumNetworkSpeed": 0.001,
-    "maxVanillaConversionPasses": 32,
     "vanillaClaimHaloDepth": 2,
     "intentQueueMaxPerGlobalTick": 96,
     "enableRelaySources": true,
@@ -20,9 +19,6 @@
     "debugControllerStatsOnInteract": false,
     "enableWaterfallCompat": true,
     "waterfallCompatDebug": false,
-    "verboseDebug": false,
-    "enableLegacyFootprintSweep": true,
-    "legacyFootprintMaxKeys": 16384,
-    "legacyFootprintSweepKeysPerTick": 16
+    "verboseDebug": false
   }
 }
