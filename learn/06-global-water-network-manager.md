@@ -8,15 +8,37 @@ The mod uses one server dispatcher (`StartCentralWaterTick`) that:
 
 - runs at configurable interval (`GlobalTickMs`),
 - processes only up to `MaxControllersPerGlobalTick`,
-- round-robins through controllers.
+- pulls controllers from a min-heap priority queue keyed on each
+  controller's `nextCentralWaterTickDueMs`, so the most-overdue
+  controller always runs first.
 
-This gives hard performance control when many machines are loaded.
+This gives hard performance control when many machines are loaded
+without round-robin starvation: when `HardGlobalTickBudgetMs` cuts a
+tick short, the controllers left unprocessed are by definition the
+ones that became due most recently, so the next tick naturally picks
+up the longest-waiting work first.
 
 See:
 
-- start tick listener at lines 65-70,
-- dispatcher logic at lines 209-267,
-- round-robin index handling at lines 241-261.
+- start tick listener in `StartCentralWaterTick`,
+- queue/dispatch logic in `OnGlobalWaterTick`,
+- registration in `RegisterForCentralWaterTick`,
+- compaction (rebuilds the heap and drops tombstones) in
+  `CompactCentralWaterTickList`.
+
+### Lazy decrease-key
+
+`PriorityQueue<TElement, TPriority>` does not support decrease-key, so
+controllers may sit in the heap with a priority that has since been
+overwritten by `ScheduleNextWaterTick` (e.g. after interaction or a
+config reload). The dispatcher reconciles this lazily: each id also
+records its currently-enqueued priority in
+`centralWaterTickEnqueuedPriorityById`. On dequeue, if the popped
+priority no longer matches that record, the entry is treated as a
+tombstone and discarded; the canonical entry remains in the heap and
+will be picked up later. `UnregisterFromCentralWaterTick` uses the
+same pattern - it only edits the side dictionaries and lets the heap
+drain its tombstones on the next dequeue or compaction pass.
 
 ## Core Responsibilities
 

@@ -303,6 +303,15 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return nowMs >= nextCentralWaterTickDueMs;
     }
 
+    /// <summary>
+    /// Returns the next-due timestamp the controller has scheduled itself to run on. Used by
+    /// <see cref="ArchimedesWaterNetworkManager"/> as a priority-queue key so the dispatcher can
+    /// pick the most-overdue controllers first instead of round-robin sweeping. Returns 0 before
+    /// the first tick is scheduled, in which case the manager treats the controller as
+    /// immediately due.
+    /// </summary>
+    internal long GetNextCentralWaterTickDueMs() => nextCentralWaterTickDueMs;
+
     internal void RunCentralWaterTick()
     {
         OnWaterControllerTick();

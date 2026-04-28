@@ -22,6 +22,15 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private const int UnownedCleanupRetryCooldownMs = 3000;
     private const int DrainQuarantineMs = 1500;
     private const int DrainQuarantinePruneIntervalMs = 1000;
+    /// <summary>
+    /// Soft cap on the number of entries in <see cref="drainQuarantineUntilMsByKey"/>. When
+    /// <see cref="MarkDrainQuarantine"/> is called at or above this threshold for a key not already
+    /// tracked, a forced prune runs (bypassing <see cref="DrainQuarantinePruneIntervalMs"/>); if the
+    /// map is still saturated, the entry whose <c>until</c> is smallest (soonest-to-expire) is
+    /// evicted before insertion. Aqueduct entries (with the <see cref="AqueductDrainQuarantineMultiplier"/>
+    /// applied) tend to survive eviction naturally because their <c>until</c> values are larger.
+    /// </summary>
+    private const int DrainQuarantineSoftCap = 8192;
     private const int HardGlobalTickBudgetMs = 10;
     private const bool AggressiveDrainEnabled = true;
     private const bool DrainQueueCoalesceEnabled = true;
@@ -103,7 +112,20 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private readonly Dictionary<long, string> relayOwnerByPos = new();
 
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> centralWaterTickControllers = new(StringComparer.Ordinal);
-    private readonly List<string> centralWaterTickOrder = new();
+    /// <summary>
+    /// Min-heap keyed on each controller's <c>nextCentralWaterTickDueMs</c>. The dispatch loop
+    /// pops the soonest-due controller first instead of cursor-stepping, which prevents tail-of-list
+    /// starvation when <see cref="HardGlobalTickBudgetMs"/> cuts a tick short. Stale entries (left
+    /// behind when a controller reschedules itself outside the dispatch path) are detected and
+    /// reconciled lazily via <see cref="centralWaterTickEnqueuedPriorityById"/>.
+    /// </summary>
+    private readonly PriorityQueue<string, long> centralWaterTickQueue = new();
+    /// <summary>
+    /// Tracks the priority each id was last enqueued under, so the dispatcher can spot stale heap
+    /// entries (lazy decrease-key pattern). Authoritative when a controller's
+    /// <c>nextCentralWaterTickDueMs</c> moves between enqueue and dequeue.
+    /// </summary>
+    private readonly Dictionary<string, long> centralWaterTickEnqueuedPriorityById = new(StringComparer.Ordinal);
     private readonly HashSet<string> centralWaterTickSet = new(StringComparer.Ordinal);
     private readonly Dictionary<long, IncrementalDrainState> incrementalDrainStateByKey = new();
     private readonly Queue<long> incrementalDrainQueue = new();
@@ -115,7 +137,6 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     /// <summary>Reusable BFS queue scratch. Server-tick single-threaded. Cleared on entry to every BFS.</summary>
     private readonly Queue<long> bfsQueueScratch = new();
     private readonly List<ArchimedesOutletState> activeSeedStatesCache = new();
-    private int centralWaterTickCursor;
     private int centralWaterTickCountDownToCompaction = 20;
     private int connectedManagedComponentCacheGeneration;
     private int activeSeedStatesCacheGeneration = -1;
@@ -256,20 +277,19 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     {
         string id = controller.ControllerId;
         centralWaterTickControllers[id] = new WeakReference<BlockEntityWaterArchimedesScrew>(controller);
-        if (centralWaterTickSet.Add(id))
+        if (!centralWaterTickSet.Add(id))
         {
-            int insertAt = centralWaterTickOrder.BinarySearch(id, StringComparer.Ordinal);
-            if (insertAt < 0)
-            {
-                insertAt = ~insertAt;
-            }
-            centralWaterTickOrder.Insert(insertAt, id);
-
-            if (insertAt <= centralWaterTickCursor && centralWaterTickOrder.Count > 1)
-            {
-                centralWaterTickCursor++;
-            }
+            return;
         }
+
+        long priority = controller.GetNextCentralWaterTickDueMs();
+        if (priority == 0)
+        {
+            priority = Environment.TickCount64;
+        }
+
+        centralWaterTickQueue.Enqueue(id, priority);
+        centralWaterTickEnqueuedPriorityById[id] = priority;
     }
 
     public void UnregisterFromCentralWaterTick(string controllerId)
@@ -280,7 +300,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             return;
         }
 
-        centralWaterTickOrder.RemoveAll(s => string.Equals(s, controllerId, StringComparison.Ordinal));
+        centralWaterTickEnqueuedPriorityById.Remove(controllerId);
     }
 
     private void OnGlobalWaterTick(float dt)
@@ -308,43 +328,85 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             ArchimedesPerf.AddCount("water.incrementalDrain.queueDepth", incrementalDrainQueue.Count);
             ArchimedesPerf.AddCount("water.incrementalDrain.activeStates", incrementalDrainStateByKey.Count);
             ArchimedesPerf.AddCount("water.incrementalDrain.deferredFanoutBacklog", deferredNeighborFanoutQueue.Count);
+            ArchimedesPerf.AddCount("water.drainQuarantine.size", drainQuarantineUntilMsByKey.Count);
             int budget = Math.Max(1, config.Water.MaxControllersPerGlobalTick);
-            int n = centralWaterTickOrder.Count;
-            if (n == 0)
+            ArchimedesPerf.AddCount("water.globalTick.queueDepth", centralWaterTickQueue.Count);
+            if (centralWaterTickQueue.Count == 0)
             {
                 return;
             }
 
             int processed = 0;
             int deferred = 0;
+            int staleHeapSkips = 0;
+            int tombstoneSkips = 0;
             bool budgetBreak = false;
-            for (int step = 0; step < n; step++)
+            while (processed < budget && centralWaterTickQueue.Count > 0)
             {
-                if (processed >= budget)
+                if (!centralWaterTickQueue.TryPeek(out string? peekedId, out long priority) || peekedId == null)
                 {
                     break;
                 }
 
-                int idx = (centralWaterTickCursor + step) % n;
-                string id = centralWaterTickOrder[idx];
+                if (priority > now)
+                {
+                    break;
+                }
+
+                centralWaterTickQueue.Dequeue();
+                string id = peekedId;
+
+                if (!centralWaterTickSet.Contains(id))
+                {
+                    centralWaterTickEnqueuedPriorityById.Remove(id);
+                    tombstoneSkips++;
+                    continue;
+                }
+
+                if (!centralWaterTickEnqueuedPriorityById.TryGetValue(id, out long currentPriority) ||
+                    currentPriority != priority)
+                {
+                    staleHeapSkips++;
+                    continue;
+                }
 
                 if (!centralWaterTickControllers.TryGetValue(id, out WeakReference<BlockEntityWaterArchimedesScrew>? wr) ||
                     !wr.TryGetTarget(out BlockEntityWaterArchimedesScrew? be))
                 {
+                    centralWaterTickSet.Remove(id);
+                    centralWaterTickControllers.Remove(id);
+                    centralWaterTickEnqueuedPriorityById.Remove(id);
+                    tombstoneSkips++;
                     continue;
                 }
 
                 if (!be.IsCentralWaterTickDue(now))
                 {
+                    long reEnqueueAt = be.GetNextCentralWaterTickDueMs();
+                    if (reEnqueueAt == 0)
+                    {
+                        reEnqueueAt = now;
+                    }
+                    centralWaterTickEnqueuedPriorityById[id] = reEnqueueAt;
+                    centralWaterTickQueue.Enqueue(id, reEnqueueAt);
                     continue;
                 }
 
                 be.RunCentralWaterTick();
                 processed++;
+
+                long updatedPriority = be.GetNextCentralWaterTickDueMs();
+                if (updatedPriority == 0)
+                {
+                    updatedPriority = now;
+                }
+                centralWaterTickEnqueuedPriorityById[id] = updatedPriority;
+                centralWaterTickQueue.Enqueue(id, updatedPriority);
+
                 long elapsedMs = Math.Max(0, Environment.TickCount64 - tickStartedAtMs);
                 if (elapsedMs >= HardGlobalTickBudgetMs)
                 {
-                    deferred = Math.Max(0, n - (step + 1));
+                    deferred = centralWaterTickQueue.Count;
                     budgetBreak = true;
                     break;
                 }
@@ -357,8 +419,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
             ArchimedesPerf.AddCount("water.globalTick.deferredControllers", deferred);
             ArchimedesPerf.AddCount("water.globalTick.elapsedMs", Math.Max(0, Environment.TickCount64 - tickStartedAtMs));
+            ArchimedesPerf.AddCount("water.globalTick.staleHeapSkips", staleHeapSkips);
+            ArchimedesPerf.AddCount("water.globalTick.tombstoneSkips", tombstoneSkips);
             lastGlobalTickExceededBudget = budgetBreak;
-            centralWaterTickCursor = (centralWaterTickCursor + 1) % n;
         }
         finally
         {
@@ -367,23 +430,62 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Periodic compaction pass: drops dead WeakRefs from <see cref="centralWaterTickControllers"/>
+    /// and rebuilds <see cref="centralWaterTickQueue"/> from scratch so accumulated tombstones
+    /// (entries left behind by <see cref="UnregisterFromCentralWaterTick"/> and lazy-decrease-key
+    /// reschedules) are physically removed from the heap. Runs every
+    /// <c>centralWaterTickCountDownToCompaction</c> global ticks.
+    /// </summary>
     private void CompactCentralWaterTickList()
     {
-        for (int i = centralWaterTickOrder.Count - 1; i >= 0; i--)
+        List<string>? deadIds = null;
+        foreach (KeyValuePair<string, WeakReference<BlockEntityWaterArchimedesScrew>> kvp in centralWaterTickControllers)
         {
-            string id = centralWaterTickOrder[i];
-            if (!centralWaterTickControllers.TryGetValue(id, out WeakReference<BlockEntityWaterArchimedesScrew>? wr) ||
-                !wr.TryGetTarget(out _))
+            if (!kvp.Value.TryGetTarget(out _))
             {
-                centralWaterTickOrder.RemoveAt(i);
-                centralWaterTickControllers.Remove(id);
-                centralWaterTickSet.Remove(id);
+                deadIds ??= new List<string>();
+                deadIds.Add(kvp.Key);
             }
         }
 
-        if (centralWaterTickCursor >= centralWaterTickOrder.Count && centralWaterTickOrder.Count > 0)
+        if (deadIds != null)
         {
-            centralWaterTickCursor %= centralWaterTickOrder.Count;
+            for (int i = 0; i < deadIds.Count; i++)
+            {
+                string id = deadIds[i];
+                centralWaterTickControllers.Remove(id);
+                centralWaterTickSet.Remove(id);
+                centralWaterTickEnqueuedPriorityById.Remove(id);
+            }
+        }
+
+        centralWaterTickQueue.Clear();
+        long now = Environment.TickCount64;
+        foreach (KeyValuePair<string, WeakReference<BlockEntityWaterArchimedesScrew>> kvp in centralWaterTickControllers)
+        {
+            string id = kvp.Key;
+            if (!centralWaterTickSet.Contains(id))
+            {
+                continue;
+            }
+
+            long priority;
+            if (kvp.Value.TryGetTarget(out BlockEntityWaterArchimedesScrew? be))
+            {
+                priority = be.GetNextCentralWaterTickDueMs();
+                if (priority == 0)
+                {
+                    priority = now;
+                }
+            }
+            else
+            {
+                priority = now;
+            }
+
+            centralWaterTickQueue.Enqueue(id, priority);
+            centralWaterTickEnqueuedPriorityById[id] = priority;
         }
     }
 
@@ -844,13 +946,56 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         {
             effectiveDurationMs = Math.Max(durationMs, durationMs * AqueductDrainQuarantineMultiplier);
         }
-        long until = Environment.TickCount64 + Math.Max(0, effectiveDurationMs);
-        if (drainQuarantineUntilMsByKey.TryGetValue(key, out long existingUntil) && existingUntil >= until)
+        long now = Environment.TickCount64;
+        long until = now + Math.Max(0, effectiveDurationMs);
+        bool keyAlreadyTracked = drainQuarantineUntilMsByKey.TryGetValue(key, out long existingUntil);
+        if (keyAlreadyTracked && existingUntil >= until)
         {
             return;
         }
 
+        if (!keyAlreadyTracked && drainQuarantineUntilMsByKey.Count >= DrainQuarantineSoftCap)
+        {
+            PruneExpiredDrainQuarantine(now, force: true);
+            if (drainQuarantineUntilMsByKey.Count >= DrainQuarantineSoftCap)
+            {
+                EvictSmallestUntilDrainQuarantineEntry();
+                ArchimedesPerf.AddCount("water.drainQuarantine.capEvictions");
+            }
+        }
+
         drainQuarantineUntilMsByKey[key] = until;
+    }
+
+    /// <summary>
+    /// Removes the entry from <see cref="drainQuarantineUntilMsByKey"/> whose <c>until</c> value is
+    /// smallest (soonest-to-expire). Called only when the soft cap is hit and a forced prune did
+    /// not free space, so the O(N) scan runs at most once per cap-saturating insertion.
+    /// </summary>
+    private void EvictSmallestUntilDrainQuarantineEntry()
+    {
+        if (drainQuarantineUntilMsByKey.Count == 0)
+        {
+            return;
+        }
+
+        long victimKey = 0;
+        long victimUntil = long.MaxValue;
+        bool hasVictim = false;
+        foreach (KeyValuePair<long, long> entry in drainQuarantineUntilMsByKey)
+        {
+            if (!hasVictim || entry.Value < victimUntil)
+            {
+                victimKey = entry.Key;
+                victimUntil = entry.Value;
+                hasVictim = true;
+            }
+        }
+
+        if (hasVictim)
+        {
+            drainQuarantineUntilMsByKey.Remove(victimKey);
+        }
     }
 
     public bool IsDrainQuarantined(BlockPos pos)
@@ -873,21 +1018,27 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     /// Removes expired entries from <see cref="drainQuarantineUntilMsByKey"/>. Throttled to run at
     /// most once per <see cref="DrainQuarantinePruneIntervalMs"/>; invoked from the global water
     /// tick. <see cref="IsDrainQuarantined(long)"/> deliberately does not call this anymore so that
-    /// hot-path claim checks stay allocation-free.
+    /// hot-path claim checks stay allocation-free. Pass <paramref name="force"/>=true to bypass the
+    /// throttle (used when the soft cap is hit during <see cref="MarkDrainQuarantine"/>); a forced
+    /// pass does not advance <see cref="nextDrainQuarantinePruneAtMs"/> so the regular cadence is
+    /// preserved.
     /// </summary>
-    private void PruneExpiredDrainQuarantine(long nowMs)
+    private void PruneExpiredDrainQuarantine(long nowMs, bool force = false)
     {
         if (drainQuarantineUntilMsByKey.Count == 0)
         {
             return;
         }
 
-        if (nowMs < nextDrainQuarantinePruneAtMs)
+        if (!force && nowMs < nextDrainQuarantinePruneAtMs)
         {
             return;
         }
 
-        nextDrainQuarantinePruneAtMs = nowMs + DrainQuarantinePruneIntervalMs;
+        if (!force)
+        {
+            nextDrainQuarantinePruneAtMs = nowMs + DrainQuarantinePruneIntervalMs;
+        }
 
         List<long> scratch = drainQuarantinePruneScratch;
         scratch.Clear();
