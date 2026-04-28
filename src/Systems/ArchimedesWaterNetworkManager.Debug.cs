@@ -9,8 +9,10 @@ public sealed partial class ArchimedesWaterNetworkManager
 {
     public IReadOnlyList<ManagedSourceDebugInfo> CollectManagedSourceDebug(BlockPos center, int radius)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.debug.collectManagedSources");
         int clampedRadius = Math.Clamp(radius, 1, 128);
         var result = new List<ManagedSourceDebugInfo>();
+        int visitedCells = 0;
 
         int minX = center.X - clampedRadius;
         int maxX = center.X + clampedRadius;
@@ -25,6 +27,7 @@ public sealed partial class ArchimedesWaterNetworkManager
             {
                 for (int z = minZ; z <= maxZ; z++)
                 {
+                    visitedCells++;
                     BlockPos pos = new(x, y, z);
                     Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
                     bool isDebugSource =
@@ -66,14 +69,18 @@ public sealed partial class ArchimedesWaterNetworkManager
             }
         }
 
+        ArchimedesPerf.AddCount("water.debug.collectManagedSources.visitedCells", visitedCells);
+        ArchimedesPerf.AddCount("water.debug.collectManagedSources.matches", result.Count);
         return result;
     }
 
     public IReadOnlyList<BlockPos> CollectRelayCandidateDebug(BlockPos center, int radius)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.debug.collectRelayCandidates");
         int clampedRadius = Math.Clamp(radius, 1, 128);
         var result = new List<BlockPos>();
         HashSet<long> seen = new();
+        int visitedCells = 0;
 
         int minX = center.X - clampedRadius;
         int maxX = center.X + clampedRadius;
@@ -88,6 +95,7 @@ public sealed partial class ArchimedesWaterNetworkManager
             {
                 for (int z = minZ; z <= maxZ; z++)
                 {
+                    visitedCells++;
                     BlockPos pos = new(x, y, z);
                     if (!ArchimedesRelayCandidateRules.IsPromotableRelayCandidate(api.World, pos, this))
                     {
@@ -105,6 +113,8 @@ public sealed partial class ArchimedesWaterNetworkManager
             }
         }
 
+        ArchimedesPerf.AddCount("water.debug.collectRelayCandidates.visitedCells", visitedCells);
+        ArchimedesPerf.AddCount("water.debug.collectRelayCandidates.matches", result.Count);
         return result;
     }
 }

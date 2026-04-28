@@ -104,12 +104,15 @@ internal static class DisableWaterSourceRegenPatch
         Block block
     )
     {
+        ArchimedesPerf.AddCount("compat.sourceRegen.call");
         if (block.LiquidCode == "water")
         {
             // Prevent water source promotion by keeping current block id.
+            ArchimedesPerf.AddCount("compat.sourceRegen.waterPrevented");
             return block.BlockId;
         }
 
+        ArchimedesPerf.AddCount("compat.sourceRegen.passThrough");
         return instance.GetMoreLiquidBlockId(world, pos, block);
     }
 

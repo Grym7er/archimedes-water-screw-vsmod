@@ -30,6 +30,21 @@ public sealed class ArchimedesScrewConfig
         /// </summary>
         public int MaxBlocksPerStep { get; set; } = 1;
 
+        /// <summary>
+        /// If true, managed source drain requests decay height step-by-step instead of instant deletion.
+        /// </summary>
+        public bool EnableIncrementalSourceDrain { get; set; } = true;
+
+        /// <summary>
+        /// Milliseconds between source-height decrement steps while incremental drain is active.
+        /// </summary>
+        public int IncrementalDrainStepIntervalMs { get; set; } = 120;
+
+        /// <summary>
+        /// Max incremental drain steps processed per global water tick.
+        /// </summary>
+        public int MaxIncrementalDrainStepsPerGlobalTick { get; set; } = 32;
+
         public int MaxScrewLength { get; set; } = 32;
 
         public float MinimumNetworkSpeed { get; set; } = 0.001f;
@@ -105,6 +120,9 @@ public sealed class ArchimedesScrewConfig
             MaxControllersPerGlobalTick = source.MaxControllersPerGlobalTick;
             AssemblyAnalysisCacheMs = source.AssemblyAnalysisCacheMs;
             MaxBlocksPerStep = source.MaxBlocksPerStep;
+            EnableIncrementalSourceDrain = source.EnableIncrementalSourceDrain;
+            IncrementalDrainStepIntervalMs = source.IncrementalDrainStepIntervalMs;
+            MaxIncrementalDrainStepsPerGlobalTick = source.MaxIncrementalDrainStepsPerGlobalTick;
             MaxScrewLength = source.MaxScrewLength;
             MinimumNetworkSpeed = source.MinimumNetworkSpeed;
             VanillaClaimHaloDepth = source.VanillaClaimHaloDepth;

@@ -108,7 +108,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     {
         ArchimedesScrewConfig.WaterConfig w = config.Water;
         api.Logger.Notification(
-            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, maxScrewLength={7}, minNetworkSpeed={8}, vanillaClaimHaloDepth={9}, intentQueueMaxPerGlobalTick={10}, enableRelaySources={11}, maxRelayPromotionsPerTick={12}, maxRelaySourcesPerController={13}, requiredMechPowerForMaxRelay={14}, relayPowerHysteresisPct={15}, relayCandidateOrderingMode={16}, debugControllerStatsOnInteract={17}, enableWaterfallCompat={18}, waterfallCompatDebug={19}, verboseDebug={20}",
+            "{0} Effective config: fastTickMs={1}, idleTickMs={2}, globalTickMs={3}, maxControllersPerGlobalTick={4}, assemblyAnalysisCacheMs={5}, maxBlocksPerStep={6}, enableIncrementalSourceDrain={7}, incrementalDrainStepIntervalMs={8}, maxIncrementalDrainStepsPerGlobalTick={9}, maxScrewLength={10}, minNetworkSpeed={11}, vanillaClaimHaloDepth={12}, intentQueueMaxPerGlobalTick={13}, enableRelaySources={14}, maxRelayPromotionsPerTick={15}, maxRelaySourcesPerController={16}, requiredMechPowerForMaxRelay={17}, relayPowerHysteresisPct={18}, relayCandidateOrderingMode={19}, debugControllerStatsOnInteract={20}, enableWaterfallCompat={21}, waterfallCompatDebug={22}, verboseDebug={23}",
             LogPrefix,
             w.FastTickMs,
             w.IdleTickMs,
@@ -116,6 +116,9 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             w.MaxControllersPerGlobalTick,
             w.AssemblyAnalysisCacheMs,
             w.MaxBlocksPerStep,
+            w.EnableIncrementalSourceDrain,
+            w.IncrementalDrainStepIntervalMs,
+            w.MaxIncrementalDrainStepsPerGlobalTick,
             w.MaxScrewLength,
             w.MinimumNetworkSpeed,
             w.VanillaClaimHaloDepth,
@@ -313,6 +316,13 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     .WithDescription("Enable periodic profiling logs.")
                     .HandleWith(_ =>
                     {
+                        if (ArchimedesPerf.IsEnabled)
+                        {
+                            int pending = ArchimedesPerf.GetPendingMetricCount();
+                            return TextCommandResult.Success(
+                                $"Profiling is already enabled (interval={ArchimedesPerf.FlushIntervalMs}ms, pendingMetrics={pending}).");
+                        }
+
                         ArchimedesPerf.SetEnabled(true);
                         api.Logger.Notification("{0} Profiling enabled (interval={1}ms)", LogPrefix, ArchimedesPerf.FlushIntervalMs);
                         return TextCommandResult.Success($"Profiling enabled (interval={ArchimedesPerf.FlushIntervalMs}ms).");
@@ -322,9 +332,21 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     .WithDescription("Disable profiling logs.")
                     .HandleWith(_ =>
                     {
+                        if (!ArchimedesPerf.IsEnabled)
+                        {
+                            return TextCommandResult.Success("Profiling is already disabled.");
+                        }
+
+                        int pending = ArchimedesPerf.GetPendingMetricCount();
+                        if (pending > 0)
+                        {
+                            ArchimedesPerf.FlushNow(api);
+                        }
+
                         ArchimedesPerf.SetEnabled(false);
-                        api.Logger.Notification("{0} Profiling disabled", LogPrefix);
-                        return TextCommandResult.Success("Profiling disabled.");
+                        api.Logger.Notification("{0} Profiling disabled (final flush={1})", LogPrefix, pending > 0 ? "yes" : "no");
+                        return TextCommandResult.Success(
+                            $"Profiling disabled (final flush={(pending > 0 ? "yes" : "no")}, pendingMetrics={pending}).");
                     })
                 .EndSubCommand()
                 .BeginSubCommand("flush")
@@ -345,7 +367,9 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                     .HandleWith(_ =>
                     {
                         string state = ArchimedesPerf.IsEnabled ? "enabled" : "disabled";
-                        return TextCommandResult.Success($"Profiling is {state} (interval={ArchimedesPerf.FlushIntervalMs}ms).");
+                        int pending = ArchimedesPerf.GetPendingMetricCount();
+                        return TextCommandResult.Success(
+                            $"Profiling is {state} (interval={ArchimedesPerf.FlushIntervalMs}ms, pendingMetrics={pending}).");
                     })
                 .EndSubCommand()
             .EndSubCommand()
@@ -484,11 +508,15 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
     private void SendWaterDebugSnapshotToAllPlayers()
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("net.debugwater.broadcast");
         if (!waterDebugEnabled || sapi == null || WaterManager == null || serverChannel == null)
         {
             return;
         }
 
+        int playersTargeted = 0;
+        int totalSourcesPacked = 0;
+        int totalRelayCandidatesPacked = 0;
         foreach (IPlayer onlinePlayer in sapi.World.AllOnlinePlayers)
         {
             if (onlinePlayer is not IServerPlayer serverPlayer || serverPlayer.Entity == null)
@@ -500,6 +528,9 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 WaterManager.CollectManagedSourceDebug(serverPlayer.Entity.Pos.AsBlockPos, WaterDebugRadius);
             IReadOnlyList<BlockPos> relayCandidates =
                 WaterManager.CollectRelayCandidateDebug(serverPlayer.Entity.Pos.AsBlockPos, WaterDebugRadius);
+            playersTargeted++;
+            totalSourcesPacked += sources.Count;
+            totalRelayCandidatesPacked += relayCandidates.Count;
             var packet = new ArchimedesWaterDebugSnapshotPacket
             {
                 Enabled = true
@@ -532,6 +563,10 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
             serverChannel.SendPacket(packet, serverPlayer);
         }
+
+        ArchimedesPerf.AddCount("net.debugwater.playersTargeted", playersTargeted);
+        ArchimedesPerf.AddCount("net.debugwater.sourcesPacked", totalSourcesPacked);
+        ArchimedesPerf.AddCount("net.debugwater.relayCandidatesPacked", totalRelayCandidatesPacked);
     }
 
     private void OnConfigLibConfigSaved(string eventName, ref EnumHandling handling, IAttribute data)
@@ -622,6 +657,15 @@ public sealed class ArchimedesScrewModSystem : ModSystem
                 return true;
             case "MAX_BLOCKS_PER_STEP":
                 target.MaxBlocksPerStep = tree.GetInt("value");
+                return true;
+            case "ENABLE_INCREMENTAL_SOURCE_DRAIN":
+                target.EnableIncrementalSourceDrain = tree.GetBool("value");
+                return true;
+            case "INCREMENTAL_DRAIN_STEP_INTERVAL_MS":
+                target.IncrementalDrainStepIntervalMs = tree.GetInt("value");
+                return true;
+            case "MAX_INCREMENTAL_DRAIN_STEPS_PER_GLOBAL_TICK":
+                target.MaxIncrementalDrainStepsPerGlobalTick = tree.GetInt("value");
                 return true;
             case "MAX_SCREW_LENGTH":
                 target.MaxScrewLength = tree.GetInt("value");

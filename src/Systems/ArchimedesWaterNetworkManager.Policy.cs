@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 
@@ -10,9 +9,16 @@ public sealed partial class ArchimedesWaterNetworkManager
 {
     private readonly Dictionary<long, ManagedSourceProvenance> sourceProvenanceByPos = new();
     private readonly Dictionary<long, string> lockedVanillaFamilyByPos = new();
-    private readonly Queue<ConversionIntent> conversionIntentQueue = new();
-    private readonly HashSet<long> queuedIntentKeys = new();
+    private readonly Queue<long> playerIntentQueue = new();
+    private readonly Queue<long> nonPlayerIntentQueue = new();
+    private readonly Dictionary<long, ConversionIntent> queuedIntentByKey = new();
     private static readonly List<BlockPos> LockCaptureOffsets = BuildLockCaptureOffsets();
+    private static readonly List<BlockPos> LockCaptureOffsetsAggressive = BuildAggressiveLockCaptureOffsets();
+    private const int IntentCoalesceWindowMs = 500;
+    private const bool AggressivePolicyEnabled = true;
+    private const int ClaimDeferDrainBacklogThreshold = 256;
+    private const bool ReducedLockCaptureRadiusWhenAggressive = true;
+    private const bool RelaxedFrontierChecksUnderDrainPressure = true;
 
     public void EnqueueConversionIntent(
         BlockPos pos,
@@ -22,49 +28,151 @@ public sealed partial class ArchimedesWaterNetworkManager
         bool playerIntent = false)
     {
         long key = ArchimedesPosKey.Pack(pos);
-        if (!queuedIntentKeys.Add(key))
+        long nowMs = Environment.TickCount64;
+        if (queuedIntentByKey.TryGetValue(key, out ConversionIntent existing))
         {
+            bool recentlyQueued = nowMs - existing.EnqueuedAtMs <= IntentCoalesceWindowMs;
+            if (recentlyQueued &&
+                string.Equals(existing.FamilyId, familyId, StringComparison.Ordinal) &&
+                string.Equals(existing.OwnerHintControllerId, ownerHintControllerId, StringComparison.Ordinal) &&
+                existing.PlayerIntent == playerIntent)
+            {
+                ArchimedesPerf.AddCount("water.intent.coalesced");
+                return;
+            }
+
+            bool promoteToPlayer = playerIntent && !existing.PlayerIntent;
+            ConversionIntent updated = existing with
+            {
+                FamilyId = familyId,
+                OwnerHintControllerId = ownerHintControllerId,
+                Reason = reason,
+                PlayerIntent = existing.PlayerIntent || playerIntent,
+                EnqueuedAtMs = nowMs
+            };
+            queuedIntentByKey[key] = updated;
+            if (promoteToPlayer)
+            {
+                playerIntentQueue.Enqueue(key);
+            }
+            ArchimedesPerf.AddCount("water.intent.coalesced");
             return;
         }
 
-        conversionIntentQueue.Enqueue(
-            new ConversionIntent(
-                pos.Copy(),
-                familyId,
-                ownerHintControllerId,
-                reason,
-                playerIntent,
-                Environment.TickCount64
-            )
+        ConversionIntent fresh = new(
+            pos.Copy(),
+            familyId,
+            ownerHintControllerId,
+            reason,
+            playerIntent,
+            nowMs
         );
+        queuedIntentByKey[key] = fresh;
+        if (playerIntent)
+        {
+            playerIntentQueue.Enqueue(key);
+        }
+        else
+        {
+            nonPlayerIntentQueue.Enqueue(key);
+        }
         ArchimedesPerf.AddCount("water.intent.enqueued");
     }
 
     private void ProcessConversionIntentQueue()
     {
-        if (conversionIntentQueue.Count == 0)
+        if (queuedIntentByKey.Count == 0)
         {
             return;
         }
 
         int budget = Math.Max(1, config.Water.IntentQueueMaxPerGlobalTick);
-        int processed = 0;
-        while (processed < budget && conversionIntentQueue.Count > 0)
+        int playerBudget = budget;
+        int nonPlayerBudget = budget;
+        if (WasLastGlobalTickBudgetExceeded())
         {
-            ConversionIntent intent = conversionIntentQueue.Dequeue();
-            queuedIntentKeys.Remove(ArchimedesPosKey.Pack(intent.Pos));
-            TryClaimVanillaSourceWithPolicy(
-                intent.Pos,
-                intent.FamilyId,
-                intent.OwnerHintControllerId,
-                intent.Reason,
-                intent.PlayerIntent
-            );
+            nonPlayerBudget = Math.Max(1, budget / 4);
+            ArchimedesPerf.AddCount("water.intent.lagThrottleActive");
+        }
+
+        if (AggressivePolicyEnabled &&
+            GetIncrementalDrainBacklogCount() >= Math.Max(1, ClaimDeferDrainBacklogThreshold))
+        {
+            nonPlayerBudget = 0;
+            ArchimedesPerf.AddCount("water.intent.deferredForDrainBacklog");
+        }
+
+        int processed = 0;
+        int processedPlayer = 0;
+        while (processedPlayer < playerBudget && processed < budget &&
+               TryDequeueNextIntent(playerIntentQueue, playerIntentOnly: true, out ConversionIntent playerIntent))
+        {
+            ProcessIntent(playerIntent);
             processed++;
+            processedPlayer++;
+        }
+
+        int processedNonPlayer = 0;
+        while (processedNonPlayer < nonPlayerBudget && processed < budget &&
+               TryDequeueNextIntent(nonPlayerIntentQueue, playerIntentOnly: false, out ConversionIntent nonPlayerIntent))
+        {
+            ProcessIntent(nonPlayerIntent);
+            processed++;
+            processedNonPlayer++;
+        }
+
+        while (processed < budget &&
+               TryDequeueNextIntent(playerIntentQueue, playerIntentOnly: true, out ConversionIntent fallbackPlayer))
+        {
+            ProcessIntent(fallbackPlayer);
+            processed++;
+            processedPlayer++;
         }
 
         ArchimedesPerf.AddCount("water.intent.dequeued", processed);
-        ArchimedesPerf.AddCount("water.intent.remaining", conversionIntentQueue.Count);
+        ArchimedesPerf.AddCount("water.intent.dequeued.player", processedPlayer);
+        ArchimedesPerf.AddCount("water.intent.dequeued.nonPlayer", processedNonPlayer);
+        ArchimedesPerf.AddCount("water.intent.remaining", queuedIntentByKey.Count);
+    }
+
+    private bool TryDequeueNextIntent(Queue<long> queue, bool playerIntentOnly, out ConversionIntent intent)
+    {
+        while (queue.Count > 0)
+        {
+            long key = queue.Dequeue();
+            if (!queuedIntentByKey.TryGetValue(key, out ConversionIntent candidate))
+            {
+                continue;
+            }
+
+            if (playerIntentOnly && !candidate.PlayerIntent)
+            {
+                continue;
+            }
+
+            if (!playerIntentOnly && candidate.PlayerIntent)
+            {
+                continue;
+            }
+
+            queuedIntentByKey.Remove(key);
+            intent = candidate;
+            return true;
+        }
+
+        intent = default;
+        return false;
+    }
+
+    private void ProcessIntent(ConversionIntent intent)
+    {
+        TryClaimVanillaSourceWithPolicy(
+            intent.Pos,
+            intent.FamilyId,
+            intent.OwnerHintControllerId,
+            intent.Reason,
+            intent.PlayerIntent
+        );
     }
 
     public bool TryGetSourceProvenance(BlockPos pos, out ManagedSourceProvenance provenance)
@@ -91,6 +199,16 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         ArchimedesPerf.AddCount("water.claims.attempted");
+        int drainBacklog = GetIncrementalDrainBacklogCount();
+        bool aggressiveMode = AggressivePolicyEnabled;
+        bool drainPressure = aggressiveMode &&
+                            drainBacklog >= Math.Max(1, ClaimDeferDrainBacklogThreshold);
+        if (drainPressure && !playerIntent)
+        {
+            ArchimedesPerf.AddCount("water.claims.rejected.deferredByDrainBacklog");
+            return false;
+        }
+
         if (IsVanillaLocked(pos, familyId))
         {
             ArchimedesPerf.AddCount("water.claims.rejected.lockedVanilla");
@@ -98,7 +216,9 @@ public sealed partial class ArchimedesWaterNetworkManager
             return false;
         }
 
-        if (!playerIntent && !HasAtLeastTwoOwnedManagedCardinalFrontierNeighbors(pos, familyId))
+        bool requireFrontier = !playerIntent &&
+                               (!drainPressure || !RelaxedFrontierChecksUnderDrainPressure);
+        if (requireFrontier && !HasAtLeastTwoOwnedManagedCardinalFrontierNeighbors(pos, familyId))
         {
             ArchimedesPerf.AddCount("water.claims.rejected.notFrontier");
             return false;
@@ -110,7 +230,18 @@ public sealed partial class ArchimedesWaterNetworkManager
         bool assigned = false;
         if (!string.IsNullOrWhiteSpace(ownerHintControllerId))
         {
-            assigned = EnsureSourceOwned(ownerHintControllerId, pos, familyId);
+            if (CanControllerClaimInDomain(ownerHintControllerId, pos, familyId))
+            {
+                assigned = EnsureSourceOwned(ownerHintControllerId, pos, familyId);
+                if (assigned)
+                {
+                    ArchimedesPerf.AddCount("water.claims.hintFastPathHit");
+                }
+            }
+            else
+            {
+                ArchimedesPerf.AddCount("water.claims.hintFastPathRejectedDomain");
+            }
         }
 
         if (!assigned)
@@ -170,7 +301,11 @@ public sealed partial class ArchimedesWaterNetworkManager
 
     public void CaptureVanillaLocksAround(BlockPos centerPos, string familyId)
     {
-        foreach (BlockPos delta in LockCaptureOffsets)
+        List<BlockPos> offsets = AggressivePolicyEnabled &&
+                                 ReducedLockCaptureRadiusWhenAggressive
+            ? LockCaptureOffsetsAggressive
+            : LockCaptureOffsets;
+        foreach (BlockPos delta in offsets)
         {
             BlockPos candidate = new(centerPos.X + delta.X, centerPos.Y + delta.Y, centerPos.Z + delta.Z);
             Block fluid = api.World.BlockAccessor.GetBlock(candidate, BlockLayersAccess.Fluid);
@@ -205,6 +340,19 @@ public sealed partial class ArchimedesWaterNetworkManager
         }
 
         return offsets;
+    }
+
+    private static List<BlockPos> BuildAggressiveLockCaptureOffsets()
+    {
+        return new List<BlockPos>
+        {
+            new(1, 0, 0),
+            new(-1, 0, 0),
+            new(0, 0, 1),
+            new(0, 0, -1),
+            new(0, 1, 0),
+            new(0, -1, 0)
+        };
     }
 
     /// <summary>
@@ -270,7 +418,7 @@ public sealed partial class ArchimedesWaterNetworkManager
         return false;
     }
 
-    private readonly record struct ConversionIntent(
+    private record struct ConversionIntent(
         BlockPos Pos,
         string FamilyId,
         string? OwnerHintControllerId,

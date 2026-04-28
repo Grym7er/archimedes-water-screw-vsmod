@@ -13,7 +13,7 @@ namespace ArchimedesScrew;
 public static class ArchimedesPerf
 {
     // Set true while profiling.
-    public static bool Enabled = false;
+    private static bool enabled;
 
     public static int FlushIntervalMs = 5000;
     public static int MaxLoggedMetrics = 48;
@@ -22,13 +22,25 @@ public static class ArchimedesPerf
     private static readonly Dictionary<string, Metric> Metrics = new(StringComparer.Ordinal);
     private static long nextFlushAtMs;
 
-    public static bool IsEnabled => Enabled;
+    public static bool IsEnabled => enabled;
 
     public static void SetEnabled(bool enabled)
     {
-        Enabled = enabled;
         lock (Sync)
         {
+            SetEnabledLocked(enabled, resetSession: false);
+        }
+    }
+
+    public static void ResetSession()
+    {
+        lock (Sync)
+        {
+            if (!enabled)
+            {
+                return;
+            }
+
             Metrics.Clear();
             nextFlushAtMs = Environment.TickCount64 + Math.Max(1000, FlushIntervalMs);
         }
@@ -36,7 +48,7 @@ public static class ArchimedesPerf
 
     public static PerfScope Measure(string name)
     {
-        if (!Enabled)
+        if (!enabled)
         {
             return default;
         }
@@ -46,7 +58,7 @@ public static class ArchimedesPerf
 
     public static void AddCount(string name, long value = 1)
     {
-        if (!Enabled)
+        if (!enabled)
         {
             return;
         }
@@ -61,18 +73,14 @@ public static class ArchimedesPerf
 
     public static void MaybeFlush(ICoreAPI? api)
     {
-        if (!Enabled || api == null)
-        {
-            return;
-        }
-
-        long now = Environment.TickCount64;
-        if (now < nextFlushAtMs)
+        if (!enabled || api == null)
         {
             return;
         }
 
         List<KeyValuePair<string, Metric>> snapshot;
+        long now = Environment.TickCount64;
+        int intervalMs = Math.Max(1000, FlushIntervalMs);
         lock (Sync)
         {
             if (now < nextFlushAtMs)
@@ -80,7 +88,7 @@ public static class ArchimedesPerf
                 return;
             }
 
-            nextFlushAtMs = now + Math.Max(1000, FlushIntervalMs);
+            nextFlushAtMs = now + intervalMs;
             if (Metrics.Count == 0)
             {
                 return;
@@ -101,7 +109,7 @@ public static class ArchimedesPerf
             ArchimedesScrewModSystem.LogVerboseOrNotification(api.Logger,
                 "{0} [perf/{1}s] {2}: calls={3}, totalMs={4:0.###}, avgMs={5:0.###}, maxMs={6:0.###}, count={7}",
                 ArchimedesScrewModSystem.LogPrefix,
-                Math.Max(1, FlushIntervalMs / 1000),
+                Math.Max(1, intervalMs / 1000),
                 name,
                 metric.Calls,
                 totalMs,
@@ -120,7 +128,7 @@ public static class ArchimedesPerf
             ArchimedesScrewModSystem.LogVerboseOrNotification(api.Logger,
                 "{0} [perf/{1}s] water.collectConnectedManagedCached.hitRate: hits={2}, misses={3}, hitRate={4:0.##}%",
                 ArchimedesScrewModSystem.LogPrefix,
-                Math.Max(1, FlushIntervalMs / 1000),
+                Math.Max(1, intervalMs / 1000),
                 cacheHits,
                 cacheMisses,
                 hitRate
@@ -130,18 +138,29 @@ public static class ArchimedesPerf
 
     public static void FlushNow(ICoreAPI? api)
     {
-        if (!Enabled || api == null)
+        if (!enabled || api == null)
         {
             return;
         }
 
-        nextFlushAtMs = Environment.TickCount64;
+        lock (Sync)
+        {
+            nextFlushAtMs = Environment.TickCount64;
+        }
         MaybeFlush(api);
+    }
+
+    public static int GetPendingMetricCount()
+    {
+        lock (Sync)
+        {
+            return Metrics.Count;
+        }
     }
 
     internal static void EndMeasure(string name, long elapsedTicks)
     {
-        if (!Enabled)
+        if (!enabled)
         {
             return;
         }
@@ -203,5 +222,25 @@ public static class ArchimedesPerf
         }
 
         return 0;
+    }
+
+    private static void SetEnabledLocked(bool enable, bool resetSession)
+    {
+        if (enable)
+        {
+            if (enabled && !resetSession)
+            {
+                return;
+            }
+
+            enabled = true;
+        }
+        else
+        {
+            enabled = false;
+        }
+
+        Metrics.Clear();
+        nextFlushAtMs = Environment.TickCount64 + Math.Max(1000, FlushIntervalMs);
     }
 }

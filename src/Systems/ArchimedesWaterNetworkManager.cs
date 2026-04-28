@@ -22,6 +22,15 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private const int UnownedCleanupRetryCooldownMs = 3000;
     private const int DrainQuarantineMs = 1500;
     private const int DrainQuarantinePruneIntervalMs = 1000;
+    private const int HardGlobalTickBudgetMs = 10;
+    private const bool AggressiveDrainEnabled = true;
+    private const bool DrainQueueCoalesceEnabled = true;
+    private const bool DeferredNeighborUpdatesEnabled = true;
+    private const int DeferredNeighborUpdateIntervalMs = 200;
+    private const int DeferredNeighborFanoutPerGlobalTick = 32;
+    private const int DrainQueueMaxProcessMsPerGlobalTick = 2;
+    private const int LargeComponentSamplingThreshold = 2048;
+    private const int DrainConnectivitySampleStride = 4;
 
     /// <summary>
     /// Multiplier applied to <see cref="DrainQuarantineMs"/> for cells inside HardcoreWater aqueducts,
@@ -96,6 +105,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private readonly Dictionary<string, WeakReference<BlockEntityWaterArchimedesScrew>> centralWaterTickControllers = new(StringComparer.Ordinal);
     private readonly List<string> centralWaterTickOrder = new();
     private readonly HashSet<string> centralWaterTickSet = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, IncrementalDrainState> incrementalDrainStateByKey = new();
+    private readonly Queue<long> incrementalDrainQueue = new();
+    private readonly HashSet<long> incrementalDrainQueuedKeys = new();
+    private readonly Queue<long> deferredNeighborFanoutQueue = new();
+    private readonly HashSet<long> deferredNeighborFanoutQueuedKeys = new();
+    private readonly BlockPos incrementalDrainScratchPos = new(0);
     private readonly Dictionary<long, ConnectedManagedComponentCacheEntry> connectedManagedComponentCache = new();
     /// <summary>Reusable BFS queue scratch. Server-tick single-threaded. Cleared on entry to every BFS.</summary>
     private readonly Queue<long> bfsQueueScratch = new();
@@ -105,6 +120,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private int connectedManagedComponentCacheGeneration;
     private int activeSeedStatesCacheGeneration = -1;
     private bool isInGlobalWaterTickDispatch;
+    private bool lastGlobalTickExceededBudget;
     private long lastTruncationPauseLogAtMs;
     private long globalWaterTickListenerId;
     private long postLoadReactivationListenerId;
@@ -270,14 +286,15 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     private void OnGlobalWaterTick(float dt)
     {
         using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.globalTick");
+        long tickStartedAtMs = Environment.TickCount64;
         isInGlobalWaterTickDispatch = true;
         try
         {
-            ProcessConversionIntentQueue();
             connectedManagedComponentCacheGeneration++;
             connectedManagedComponentCache.Clear();
             activeSeedStatesCacheGeneration = -1;
             activeSeedStatesCache.Clear();
+            ProcessConversionIntentQueue();
             if (--centralWaterTickCountDownToCompaction <= 0)
             {
                 CompactCentralWaterTickList();
@@ -286,6 +303,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
             long now = Environment.TickCount64;
             PruneExpiredDrainQuarantine(now);
+            ProcessIncrementalDrainQueue(now);
+            ProcessDeferredNeighborFanoutQueue(now);
+            ArchimedesPerf.AddCount("water.incrementalDrain.queueDepth", incrementalDrainQueue.Count);
+            ArchimedesPerf.AddCount("water.incrementalDrain.activeStates", incrementalDrainStateByKey.Count);
+            ArchimedesPerf.AddCount("water.incrementalDrain.deferredFanoutBacklog", deferredNeighborFanoutQueue.Count);
             int budget = Math.Max(1, config.Water.MaxControllersPerGlobalTick);
             int n = centralWaterTickOrder.Count;
             if (n == 0)
@@ -294,6 +316,8 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
 
             int processed = 0;
+            int deferred = 0;
+            bool budgetBreak = false;
             for (int step = 0; step < n; step++)
             {
                 if (processed >= budget)
@@ -317,9 +341,23 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
 
                 be.RunCentralWaterTick();
                 processed++;
+                long elapsedMs = Math.Max(0, Environment.TickCount64 - tickStartedAtMs);
+                if (elapsedMs >= HardGlobalTickBudgetMs)
+                {
+                    deferred = Math.Max(0, n - (step + 1));
+                    budgetBreak = true;
+                    break;
+                }
             }
 
             ArchimedesPerf.AddCount("water.globalTick.processedControllers", processed);
+            if (budgetBreak)
+            {
+                ArchimedesPerf.AddCount("water.globalTick.budgetBreaks");
+            }
+            ArchimedesPerf.AddCount("water.globalTick.deferredControllers", deferred);
+            ArchimedesPerf.AddCount("water.globalTick.elapsedMs", Math.Max(0, Environment.TickCount64 - tickStartedAtMs));
+            lastGlobalTickExceededBudget = budgetBreak;
             centralWaterTickCursor = (centralWaterTickCursor + 1) % n;
         }
         finally
@@ -826,6 +864,11 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                Environment.TickCount64 < until;
     }
 
+    public int GetIncrementalDrainBacklogCount()
+    {
+        return incrementalDrainStateByKey.Count + incrementalDrainQueue.Count;
+    }
+
     /// <summary>
     /// Removes expired entries from <see cref="drainQuarantineUntilMsByKey"/>. Throttled to run at
     /// most once per <see cref="DrainQuarantinePruneIntervalMs"/>; invoked from the global water
@@ -1265,6 +1308,8 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             changed = true;
         }
 
+        CancelIncrementalDrainByKey(key);
+
         AddOwnedPosToSnapshot(ownerId, pos);
         NotifyControllerSourceAssigned(ownerId, pos, "ensure source owned");
 
@@ -1481,7 +1526,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
 
             SuppressRemovalNotification(key);
-            RemoveFluidAndNotifyNeighbours(pos);
+            if (!TryEnqueueIncrementalDrain(pos, ownerId, "release orphan source"))
+            {
+                RemoveFluidAndNotifyNeighbours(pos);
+            }
             return ReleaseOutcome.OrphanRemoved;
         }
 
@@ -1505,7 +1553,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         if (IsArchimedesWaterBlock(fluidBlock))
         {
             SuppressRemovalNotification(key);
-            RemoveFluidAndNotifyNeighbours(pos);
+            if (!TryEnqueueIncrementalDrain(pos, ownerId, "release owned source"))
+            {
+                RemoveFluidAndNotifyNeighbours(pos);
+            }
         }
 
         return ReleaseOutcome.Released;
@@ -1563,7 +1614,10 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         SuppressRemovalNotification(key);
-        RemoveFluidAndNotifyNeighbours(pos);
+        if (!TryEnqueueIncrementalDrain(pos, ownerHintControllerId: null, reason: "cleanup unowned source"))
+        {
+            RemoveFluidAndNotifyNeighbours(pos);
+        }
         unownedCleanupCooldownUntilMsByKey[key] = nowMs + UnownedCleanupRetryCooldownMs;
         return true;
     }
@@ -1585,15 +1639,40 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 break;
             }
 
-            CollectConnectedManagedWater(anchor, out Dictionary<long, BlockPos> connectedWater);
-
-            foreach ((long key, BlockPos pos) in connectedWater)
+            HashSet<long> connectedKeys = new();
+            if (AggressiveDrainEnabled)
             {
+                CollectConnectedManagedWaterKeysOnly(anchor, connectedKeys);
+            }
+            else
+            {
+                CollectConnectedManagedWater(anchor, out Dictionary<long, BlockPos> connectedWater);
+                connectedKeys = connectedWater.Keys.ToHashSet();
+            }
+
+            int scanStride = 1;
+            if (AggressiveDrainEnabled &&
+                connectedKeys.Count > Math.Max(1, LargeComponentSamplingThreshold))
+            {
+                scanStride = Math.Max(1, DrainConnectivitySampleStride);
+                ArchimedesPerf.AddCount("water.cleanupUnowned.sampleStrideActive");
+                ArchimedesPerf.AddCount("water.cleanupUnowned.sampleStride", scanStride);
+            }
+
+            int scanIndex = 0;
+            foreach (long key in connectedKeys)
+            {
+                if (scanStride > 1 && (scanIndex++ % scanStride) != 0)
+                {
+                    continue;
+                }
+
                 if (removed >= budget || !seenKeys.Add(key))
                 {
                     continue;
                 }
 
+                BlockPos pos = ArchimedesPosKey.UnpackToNew(key);
                 if (TryAdoptOrRemoveUnownedArchimedesSource(pos))
                 {
                     removed++;
@@ -1618,9 +1697,16 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     public int ConvertAdjacentVanillaSources(BlockPos startPos, string? ownerHintControllerId = null)
     {
         ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterDetailed(startPos);
+        return ConvertAdjacentVanillaSources(connectedResult, ownerHintControllerId);
+    }
+
+    public int ConvertAdjacentVanillaSources(ConnectedManagedWaterResult connectedResult, string? ownerHintControllerId = null)
+    {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.convertAdjacentVanilla");
         if (connectedResult.IsTruncated)
         {
-            LogTruncationPausedAutomation("ConvertAdjacentVanillaSources", startPos, connectedResult.VisitedManagedCount);
+            BlockPos logPos = connectedResult.StartPos ?? new BlockPos(0, 0, 0);
+            LogTruncationPausedAutomation("ConvertAdjacentVanillaSources", logPos, connectedResult.VisitedManagedCount);
             return 0;
         }
 
@@ -1628,6 +1714,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         HashSet<long> convertedKeys = new();
         Dictionary<long, BlockPos> connectedWater = connectedResult.PositionsByKey;
         BlockPos adjacentPos = new(0);
+        int neighborsVisited = 0;
         foreach (BlockPos pos in connectedWater.Values)
         {
             Block currentFluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
@@ -1652,6 +1739,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 }
 
                 adjacentPos.Set(ax, ay, az);
+                neighborsVisited++;
                 if (!CanLiquidsTouch(pos, adjacentPos))
                 {
                     continue;
@@ -1664,6 +1752,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
         }
 
+        ArchimedesPerf.AddCount("water.convertAdjacentVanilla.connectedNodes", connectedWater.Count);
+        ArchimedesPerf.AddCount("water.convertAdjacentVanilla.neighborsVisited", neighborsVisited);
+        ArchimedesPerf.AddCount("water.convertAdjacentVanilla.converted", converted);
         return converted;
     }
 
@@ -1674,20 +1765,42 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     /// </summary>
     public int ConvertAdjacentVanillaSourcesIteratively(BlockPos startPos, int maxPasses, string? ownerHintControllerId = null)
     {
+        ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterDetailed(startPos);
+        return ConvertAdjacentVanillaSourcesIteratively(connectedResult, maxPasses, ownerHintControllerId);
+    }
+
+    public int ConvertAdjacentVanillaSourcesIteratively(
+        ConnectedManagedWaterResult initialConnectedResult,
+        int maxPasses,
+        string? ownerHintControllerId = null)
+    {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.convertAdjacentVanillaIterative");
         int capped = Math.Clamp(maxPasses, 1, 256);
         int total = 0;
+        int passesRun = 0;
+        ConnectedManagedWaterResult current = initialConnectedResult;
         for (int pass = 0; pass < capped; pass++)
         {
-            int batch = ConvertAdjacentVanillaSources(startPos, ownerHintControllerId);
+            passesRun++;
+            int batch = ConvertAdjacentVanillaSources(current, ownerHintControllerId);
             if (batch == 0)
             {
                 break;
             }
 
             total += batch;
+            BlockPos reseed = current.StartPos ?? ArchimedesPosKey.UnpackToNew(current.VisitedKeys.First());
+            current = CollectConnectedManagedWaterDetailed(reseed);
         }
 
+        ArchimedesPerf.AddCount("water.convertAdjacentVanillaIterative.passes", passesRun);
+        ArchimedesPerf.AddCount("water.convertAdjacentVanillaIterative.converted", total);
         return total;
+    }
+
+    internal bool WasLastGlobalTickBudgetExceeded()
+    {
+        return lastGlobalTickExceededBudget;
     }
 
     /// <summary>
@@ -1703,6 +1816,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         string? ownerHintControllerId,
         int maxVisit = MaxBfsVisited)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.seizeConnectedFamilyFluid");
         if (probeOrigins == null || probeOrigins.Count == 0)
         {
             return 0;
@@ -1829,6 +1943,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             }
         }
 
+        ArchimedesPerf.AddCount("water.seizeConnectedFamilyFluid.visited", visited.Count);
+        ArchimedesPerf.AddCount("water.seizeConnectedFamilyFluid.dequeued", dequeued);
+        ArchimedesPerf.AddCount("water.seizeConnectedFamilyFluid.seized", seized);
         return seized;
     }
 
@@ -2107,19 +2224,49 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
     {
         if (IsDrainQuarantined(sourcePos))
         {
+            ArchimedesPerf.AddCount("water.claims.rejected.drainQuarantined");
             return false;
         }
 
-        ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterCachedDetailed(sourcePos);
-        if (connectedResult.IsTruncated)
+        IReadOnlyCollection<long> connectedKeys;
+        if (AggressiveDrainEnabled)
         {
-            LogTruncationPausedAutomation("AssignNearestActiveControllerForNewSource", sourcePos, connectedResult.VisitedManagedCount);
-            return false;
+            HashSet<long> sampledConnectedKeys = new();
+            CollectConnectedManagedWaterKeysOnly(sourcePos, sampledConnectedKeys);
+            connectedKeys = sampledConnectedKeys;
+            if (sampledConnectedKeys.Count > Math.Max(1, LargeComponentSamplingThreshold))
+            {
+                HashSet<long> downsampled = new();
+                int stride = Math.Max(1, DrainConnectivitySampleStride);
+                int i = 0;
+                foreach (long sampledKey in sampledConnectedKeys)
+                {
+                    if ((i++ % stride) == 0)
+                    {
+                        downsampled.Add(sampledKey);
+                    }
+                }
+
+                connectedKeys = downsampled;
+                ArchimedesPerf.AddCount("water.findNearestActiveController.sampledConnectedSet");
+                ArchimedesPerf.AddCount("water.findNearestActiveController.sampledConnectedSet.size", downsampled.Count);
+            }
+        }
+        else
+        {
+            ConnectedManagedWaterResult connectedResult = CollectConnectedManagedWaterCachedDetailed(sourcePos);
+            if (connectedResult.IsTruncated)
+            {
+                LogTruncationPausedAutomation("AssignNearestActiveControllerForNewSource", sourcePos, connectedResult.VisitedManagedCount);
+                return false;
+            }
+
+            connectedKeys = connectedResult.VisitedKeys;
         }
 
         string? nearest = FindNearestActiveControllerId(
             sourcePos,
-            connectedResult.VisitedKeys,
+            connectedKeys,
             familyId,
             excludedControllerId: null,
             requireConnected: true
@@ -2150,7 +2297,9 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
             ? (connectedWaterKeys as HashSet<long> ?? new HashSet<long>(connectedWaterKeys))
             : null;
 
-        List<ArchimedesOutletState> candidates = new();
+        int candidateCount = 0;
+        ArchimedesOutletState? best = null;
+        long bestDistSq = long.MaxValue;
         foreach (ArchimedesOutletState seed in GetActiveSeedStatesCached())
         {
             if (excludedControllerId != null &&
@@ -2179,19 +2328,40 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
                 }
             }
 
-            candidates.Add(seed);
+            candidateCount++;
+            long distanceSq = ArchimedesPositionCodec.DistanceSquared(sourcePos, seed.SeedPos);
+            if (best == null || distanceSq < bestDistSq || (distanceSq == bestDistSq && IsPreferredControllerCandidate(seed, best.Value)))
+            {
+                bestDistSq = distanceSq;
+                best = seed;
+            }
         }
 
-        string? resolved = candidates
-            .OrderBy(seed => ArchimedesPositionCodec.DistanceSquared(sourcePos, seed.SeedPos))
-            .ThenBy(seed => seed.SeedPos.Y)
-            .ThenBy(seed => seed.SeedPos.X)
-            .ThenBy(seed => seed.SeedPos.Z)
-            .ThenBy(seed => seed.ControllerId, StringComparer.Ordinal)
-            .Select(seed => seed.ControllerId)
-            .FirstOrDefault();
-        ArchimedesPerf.AddCount("water.findNearestActiveController.candidates", candidates.Count);
-        return resolved;
+        ArchimedesPerf.AddCount("water.findNearestActiveController.candidates", candidateCount);
+        return best?.ControllerId;
+    }
+
+    private static bool IsPreferredControllerCandidate(ArchimedesOutletState candidate, ArchimedesOutletState incumbent)
+    {
+        int yCmp = candidate.SeedPos.Y.CompareTo(incumbent.SeedPos.Y);
+        if (yCmp != 0)
+        {
+            return yCmp < 0;
+        }
+
+        int xCmp = candidate.SeedPos.X.CompareTo(incumbent.SeedPos.X);
+        if (xCmp != 0)
+        {
+            return xCmp < 0;
+        }
+
+        int zCmp = candidate.SeedPos.Z.CompareTo(incumbent.SeedPos.Z);
+        if (zCmp != 0)
+        {
+            return zCmp < 0;
+        }
+
+        return string.CompareOrdinal(candidate.ControllerId, incumbent.ControllerId) < 0;
     }
 
     private void NotifyControllerSourceAssigned(string controllerId, BlockPos sourcePos, string reason)
@@ -2298,6 +2468,227 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
     }
 
+    private bool TryEnqueueIncrementalDrain(BlockPos pos, string? ownerHintControllerId, string reason)
+    {
+        if (!config.Water.EnableIncrementalSourceDrain)
+        {
+            return false;
+        }
+
+        long key = ArchimedesPosKey.Pack(pos);
+        if (!ArchimedesPosKey.IsInBounds(pos.X, pos.Y, pos.Z))
+        {
+            return false;
+        }
+
+        Block fluid = api.World.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
+        if (!IsArchimedesWaterBlock(fluid) ||
+            !TryResolveManagedWaterFamily(fluid, out string familyId))
+        {
+            return false;
+        }
+
+        int currentHeight = GetManagedWaterHeight(fluid);
+        if (currentHeight <= 0)
+        {
+            return false;
+        }
+
+        long nowMs = Environment.TickCount64;
+        if (incrementalDrainStateByKey.TryGetValue(key, out IncrementalDrainState existing))
+        {
+            long nextStep = Math.Min(existing.NextStepAtMs, nowMs);
+            incrementalDrainStateByKey[key] = existing with
+            {
+                LastObservedHeight = Math.Max(existing.LastObservedHeight, currentHeight),
+                NextStepAtMs = nextStep
+            };
+
+            if (DrainQueueCoalesceEnabled && incrementalDrainQueuedKeys.Contains(key))
+            {
+                ArchimedesPerf.AddCount("water.incrementalDrain.coalesced");
+                return true;
+            }
+        }
+
+        incrementalDrainStateByKey[key] = new IncrementalDrainState(
+            familyId,
+            currentHeight,
+            nowMs,
+            nowMs,
+            ownerHintControllerId,
+            reason
+        );
+        incrementalDrainQueue.Enqueue(key);
+        incrementalDrainQueuedKeys.Add(key);
+        ArchimedesPerf.AddCount("water.incrementalDrain.enqueued");
+        return true;
+    }
+
+    private void CancelIncrementalDrainByKey(long key)
+    {
+        if (incrementalDrainStateByKey.Remove(key))
+        {
+            ArchimedesPerf.AddCount("water.incrementalDrain.cancelled");
+        }
+
+        incrementalDrainQueuedKeys.Remove(key);
+        deferredNeighborFanoutQueuedKeys.Remove(key);
+    }
+
+    private void ProcessIncrementalDrainQueue(long nowMs)
+    {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.incrementalDrain.processQueue");
+        if (!config.Water.EnableIncrementalSourceDrain || incrementalDrainStateByKey.Count == 0 || incrementalDrainQueue.Count == 0)
+        {
+            return;
+        }
+
+        int budget = Math.Max(1, config.Water.MaxIncrementalDrainStepsPerGlobalTick);
+        int stepIntervalMs = Math.Max(10, config.Water.IncrementalDrainStepIntervalMs);
+        int maxProcessMs = Math.Max(1, DrainQueueMaxProcessMsPerGlobalTick);
+        bool deferNeighborUpdates = AggressiveDrainEnabled && DeferredNeighborUpdatesEnabled;
+        long startedAtMs = Environment.TickCount64;
+        int processed = 0;
+        int dequeues = Math.Min(incrementalDrainQueue.Count, budget * 4);
+        for (int i = 0; i < dequeues && processed < budget; i++)
+        {
+            if (Environment.TickCount64 - startedAtMs >= maxProcessMs)
+            {
+                ArchimedesPerf.AddCount("water.incrementalDrain.budgetBreakMs");
+                break;
+            }
+
+            long key = incrementalDrainQueue.Dequeue();
+            incrementalDrainQueuedKeys.Remove(key);
+            if (!incrementalDrainStateByKey.TryGetValue(key, out IncrementalDrainState state))
+            {
+                continue;
+            }
+
+            if (state.NextStepAtMs > nowMs)
+            {
+                incrementalDrainQueue.Enqueue(key);
+                incrementalDrainQueuedKeys.Add(key);
+                continue;
+            }
+
+            if (sourceOwnerByPos.ContainsKey(key) || relayOwnerByPos.ContainsKey(key))
+            {
+                incrementalDrainStateByKey.Remove(key);
+                continue;
+            }
+
+            ArchimedesPosKey.Unpack(key, incrementalDrainScratchPos);
+            if (!ArchimedesPosKey.IsInBounds(incrementalDrainScratchPos.X, incrementalDrainScratchPos.Y, incrementalDrainScratchPos.Z))
+            {
+                incrementalDrainStateByKey.Remove(key);
+                continue;
+            }
+
+            Block fluid = api.World.BlockAccessor.GetBlock(incrementalDrainScratchPos, BlockLayersAccess.Fluid);
+            if (!IsArchimedesWaterBlock(fluid) ||
+                !TryResolveManagedWaterFamily(fluid, out string familyId) ||
+                !string.Equals(familyId, state.FamilyId, StringComparison.Ordinal))
+            {
+                incrementalDrainStateByKey.Remove(key);
+                continue;
+            }
+
+            int currentHeight = GetManagedWaterHeight(fluid);
+            if (currentHeight <= 1)
+            {
+                SuppressRemovalNotification(key);
+                RemoveFluidAndNotifyNeighbours(incrementalDrainScratchPos);
+                incrementalDrainStateByKey.Remove(key);
+                processed++;
+                ArchimedesPerf.AddCount("water.incrementalDrain.completed");
+                continue;
+            }
+
+            string flow = fluid.Variant?["flow"] ?? "still";
+            int nextHeight = Math.Max(1, currentHeight - 1);
+            SuppressRemovalNotification(key);
+            SetManagedWaterVariant(incrementalDrainScratchPos, state.FamilyId, flow, nextHeight, triggerUpdates: !deferNeighborUpdates);
+            if (deferNeighborUpdates && nowMs >= state.NextFanoutAtMs)
+            {
+                EnqueueDeferredNeighborFanout(key);
+            }
+
+            incrementalDrainStateByKey[key] = state with
+            {
+                LastObservedHeight = nextHeight,
+                NextStepAtMs = nowMs + stepIntervalMs,
+                NextFanoutAtMs = nowMs + Math.Max(20, DeferredNeighborUpdateIntervalMs)
+            };
+            incrementalDrainQueue.Enqueue(key);
+            incrementalDrainQueuedKeys.Add(key);
+            processed++;
+            ArchimedesPerf.AddCount("water.incrementalDrain.step");
+        }
+    }
+
+    private void EnqueueDeferredNeighborFanout(long key)
+    {
+        if (deferredNeighborFanoutQueuedKeys.Add(key))
+        {
+            deferredNeighborFanoutQueue.Enqueue(key);
+            ArchimedesPerf.AddCount("water.incrementalDrain.deferredFanout.enqueued");
+        }
+    }
+
+    private void ProcessDeferredNeighborFanoutQueue(long nowMs)
+    {
+        if (!AggressiveDrainEnabled || !DeferredNeighborUpdatesEnabled || deferredNeighborFanoutQueue.Count == 0)
+        {
+            return;
+        }
+
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("water.incrementalDrain.processDeferredFanout");
+        int budget = Math.Max(1, DeferredNeighborFanoutPerGlobalTick);
+        int processed = 0;
+        while (processed < budget && deferredNeighborFanoutQueue.Count > 0)
+        {
+            long key = deferredNeighborFanoutQueue.Dequeue();
+            deferredNeighborFanoutQueuedKeys.Remove(key);
+
+            ArchimedesPosKey.Unpack(key, incrementalDrainScratchPos);
+            if (!ArchimedesPosKey.IsInBounds(incrementalDrainScratchPos.X, incrementalDrainScratchPos.Y, incrementalDrainScratchPos.Z))
+            {
+                continue;
+            }
+
+            Block fluid = api.World.BlockAccessor.GetBlock(incrementalDrainScratchPos, BlockLayersAccess.Fluid);
+            if (fluid.Id == 0)
+            {
+                continue;
+            }
+
+            TriggerLiquidUpdates(incrementalDrainScratchPos, fluid);
+            if (incrementalDrainStateByKey.TryGetValue(key, out IncrementalDrainState state))
+            {
+                incrementalDrainStateByKey[key] = state with
+                {
+                    NextFanoutAtMs = nowMs + Math.Max(20, DeferredNeighborUpdateIntervalMs)
+                };
+            }
+
+            processed++;
+            ArchimedesPerf.AddCount("water.incrementalDrain.deferredFanout.processed");
+        }
+    }
+
+    private static int GetManagedWaterHeight(Block fluidBlock)
+    {
+        string? heightText = fluidBlock.Variant?["height"];
+        if (int.TryParse(heightText, out int parsedHeight))
+        {
+            return parsedHeight;
+        }
+
+        return fluidBlock.LiquidLevel;
+    }
+
     private bool TryGetVanillaEquivalent(Block managedBlock, out Block vanillaBlock)
     {
         vanillaBlock = null!;
@@ -2351,6 +2742,15 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         BlockPos StartPos,
         bool IsTruncated,
         int VisitedManagedCount
+    );
+
+    private readonly record struct IncrementalDrainState(
+        string FamilyId,
+        int LastObservedHeight,
+        long NextStepAtMs,
+        long NextFanoutAtMs,
+        string? OwnerHintControllerId,
+        string Reason
     );
 
     private bool ControllerSnapshotContainsPos(string controllerId, long key)

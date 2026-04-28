@@ -13,32 +13,50 @@ public static class WaterfallSpillFluidKind
     /// </summary>
     public static bool AreCompatibleForSpill(Block existingFluid, Block incomingFluid)
     {
+        ArchimedesPerf.AddCount("compat.waterfallSpill.compatChecks");
         if (existingFluid == null || incomingFluid == null)
         {
+            ArchimedesPerf.AddCount("compat.waterfallSpill.nullInput");
             return false;
         }
 
         if (ArchimedesWaterFamilies.TryResolveManagedFamily(existingFluid, out ArchimedesWaterFamily managedExisting) &&
             ArchimedesWaterFamilies.TryResolveVanillaFamily(incomingFluid, out ArchimedesWaterFamily vanillaIncoming))
         {
-            return managedExisting.Id == vanillaIncoming.Id;
+            bool matches = managedExisting.Id == vanillaIncoming.Id;
+            ArchimedesPerf.AddCount(matches
+                ? "compat.waterfallSpill.managedExisting.vanillaIncoming.match"
+                : "compat.waterfallSpill.managedExisting.vanillaIncoming.miss");
+            return matches;
         }
 
         if (ArchimedesWaterFamilies.TryResolveVanillaFamily(existingFluid, out ArchimedesWaterFamily vanillaExisting) &&
             ArchimedesWaterFamilies.TryResolveManagedFamily(incomingFluid, out ArchimedesWaterFamily managedIncoming))
         {
-            return vanillaExisting.Id == managedIncoming.Id;
+            bool matches = vanillaExisting.Id == managedIncoming.Id;
+            ArchimedesPerf.AddCount(matches
+                ? "compat.waterfallSpill.vanillaExisting.managedIncoming.match"
+                : "compat.waterfallSpill.vanillaExisting.managedIncoming.miss");
+            return matches;
         }
 
         if (ArchimedesWaterFamilies.TryResolveManagedFamily(existingFluid, out ArchimedesWaterFamily managedA) &&
             ArchimedesWaterFamilies.TryResolveManagedFamily(incomingFluid, out ArchimedesWaterFamily managedB))
         {
-            return managedA.Id == managedB.Id;
+            bool matches = managedA.Id == managedB.Id;
+            ArchimedesPerf.AddCount(matches
+                ? "compat.waterfallSpill.managedToManaged.match"
+                : "compat.waterfallSpill.managedToManaged.miss");
+            return matches;
         }
 
-        return string.Equals(
+        bool fallback = string.Equals(
             existingFluid.FirstCodePart(0),
             incomingFluid.FirstCodePart(0),
             System.StringComparison.Ordinal);
+        ArchimedesPerf.AddCount(fallback
+            ? "compat.waterfallSpill.fallback.match"
+            : "compat.waterfallSpill.fallback.miss");
+        return fallback;
     }
 }

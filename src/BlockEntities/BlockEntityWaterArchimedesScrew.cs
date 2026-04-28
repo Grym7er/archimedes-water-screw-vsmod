@@ -30,6 +30,13 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private const int VanillaConversionPassesPerTick = 32;
     private const int LegacyFootprintMaxKeys = 16384;
     private const int LegacyFootprintSweepKeysPerTick = 16;
+    private const int SeizeZeroYieldThrottleAfterTicks = 6;
+    private const int SeizeRunEveryNthTickWhenThrottled = 4;
+    private const bool AggressiveDrainEnabled = true;
+    private const int RelayTrimEveryNthTickAggressive = 4;
+    private const int LargeComponentSamplingThresholdAggressive = 2048;
+    private const int DrainConnectivitySampleStrideAggressive = 4;
+    private const int RelaySamplingCandidateLimitAggressive = 512;
 
     private readonly Dictionary<long, BlockPos> ownedPositions = new();
     private readonly Dictionary<long, BlockPos> relayOwnedPositions = new();
@@ -110,6 +117,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     private long localCooldownSuppressedTotal;
     private long ownershipChurnTotal;
     private long lastOwnershipChurnSample;
+    private int consecutiveZeroSeizeTicks;
+    private int throttledSeizeTickCounter;
+    private int relayTrimCadenceCounter;
     private readonly IManagedWaterLocalParticipation localParticipation = new DefaultManagedWaterLocalParticipation();
 
     public string ControllerId { get; private set; } = Guid.NewGuid().ToString("N");
@@ -697,15 +707,26 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int convertedVanilla = isTruncated
             ? 0
             : waterManager.ConvertAdjacentVanillaSourcesIteratively(
-                seedPos,
+                connectedResult,
                 VanillaConversionPassesPerTick,
                 ControllerId
             );
 
-        convertedVanilla += waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
-            BuildDrainProbeOriginPositions(seedPos),
-            familyId,
-            ControllerId);
+        int seizedVanilla = 0;
+        bool skippedSeize = ShouldSkipSeizeSweep();
+        if (skippedSeize)
+        {
+            ArchimedesPerf.AddCount("controller.seize.skipped");
+        }
+        else
+        {
+            ArchimedesPerf.AddCount("controller.seize.attempted");
+            seizedVanilla = waterManager.SeizeVanillaSourcesInConnectedFamilyFluid(
+                BuildDrainProbeOriginPositions(seedPos),
+                familyId,
+                ControllerId);
+        }
+        convertedVanilla += seizedVanilla;
 
         bool canSkipConnectivityScan =
             CanSkipConnectivityScan(ensuredSeed, convertedVanilla);
@@ -717,9 +738,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             // Skip drain when BFS truncated - we would otherwise release relays beyond the BFS budget.
             if (!isTruncated)
             {
+                HashSet<long> supportedForDrain = BuildSupportedKeySetForDrain(connectedResult.VisitedKeys);
                 List<ArchimedesOutletState> skipPathSeeds =
-                    ResolveSupportingSeeds(seedPos, connectedResult.VisitedKeys);
-                DrainUnsupportedSources(skipPathSeeds, connectedResult.VisitedKeys, string.Empty);
+                    ResolveSupportingSeeds(seedPos, supportedForDrain);
+                DrainUnsupportedSources(skipPathSeeds, supportedForDrain, string.Empty);
             }
             else
             {
@@ -749,7 +771,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         );
 
         int removedDisconnected = 0;
-        List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, connectedWaterKeys);
+        HashSet<long> supportedForDrainFullPath = BuildSupportedKeySetForDrain(connectedWaterKeys);
+        List<ArchimedesOutletState> supportingSeeds = ResolveSupportingSeeds(seedPos, supportedForDrainFullPath);
         if (isTruncated)
         {
             // Skip drain when BFS could not enumerate the full component: any "unsupported" entries
@@ -761,7 +784,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             removedDisconnected = DrainUnsupportedSources(
                 supportingSeeds,
-                connectedWaterKeys,
+                supportedForDrainFullPath,
                 string.Empty);
         }
 
@@ -769,6 +792,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         {
             UpdateSnapshot();
         }
+
+        bool churnSignal =
+            ensuredSeed ||
+            convertedVanilla > 0 ||
+            removedDisconnected > 0 ||
+            relayCreated > 0 ||
+            relayTrimmed > 0;
+        UpdateSeizeStreakState(skippedSeize, seizedVanilla, churnSignal);
 
         ArchimedesScrewControllerSchedule nextSchedule = ResolveNextSchedule(
             ensuredSeed,
@@ -791,6 +822,58 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ScheduleNextWaterTick(nextSchedule, fastMs, idleMs);
 
         ArchimedesPerf.MaybeFlush(Api);
+    }
+
+    private bool ShouldSkipSeizeSweep()
+    {
+        if (lastScheduledCadence != ArchimedesScrewControllerSchedule.HighCadence)
+        {
+            return false;
+        }
+
+        if (consecutiveZeroSeizeTicks < SeizeZeroYieldThrottleAfterTicks)
+        {
+            return false;
+        }
+
+        throttledSeizeTickCounter++;
+        bool skip = (throttledSeizeTickCounter % SeizeRunEveryNthTickWhenThrottled) != 0;
+        if (skip)
+        {
+            ArchimedesPerf.AddCount("controller.seize.throttleActive");
+        }
+        return skip;
+    }
+
+    private void UpdateSeizeStreakState(bool skippedSeize, int seizedVanilla, bool churnSignal)
+    {
+        if (churnSignal)
+        {
+            if (consecutiveZeroSeizeTicks > 0)
+            {
+                ArchimedesPerf.AddCount("controller.seize.zeroYieldReset");
+            }
+            consecutiveZeroSeizeTicks = 0;
+            throttledSeizeTickCounter = 0;
+            return;
+        }
+
+        if (skippedSeize)
+        {
+            return;
+        }
+
+        if (seizedVanilla <= 0 && lastScheduledCadence == ArchimedesScrewControllerSchedule.HighCadence)
+        {
+            consecutiveZeroSeizeTicks++;
+            ArchimedesPerf.AddCount("controller.seize.zeroYieldTicks");
+        }
+        else if (consecutiveZeroSeizeTicks > 0)
+        {
+            ArchimedesPerf.AddCount("controller.seize.zeroYieldReset");
+            consecutiveZeroSeizeTicks = 0;
+            throttledSeizeTickCounter = 0;
+        }
     }
 
     private bool CanSkipConnectivityScan(bool ensuredSeed, int convertedVanilla)
@@ -822,7 +905,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 ScheduleNextRelayCreationTick(fastMs);
             }
 
-            relayTrimmed = TrimRelaySourcesToCap(seedPos, relayCap, relayWorkBudget);
+            if (ShouldRunRelayTrimThisTick(relayCap))
+            {
+                relayTrimmed = TrimRelaySourcesToCap(seedPos, relayCap, relayWorkBudget);
+            }
         }
         else if (isTruncated)
         {
@@ -830,6 +916,29 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         return (relayCreated, relayTrimmed);
+    }
+
+    private bool ShouldRunRelayTrimThisTick(int relayCap)
+    {
+        if (relayOwnedPositions.Count <= relayCap)
+        {
+            return false;
+        }
+
+        if (waterConfig == null || !AggressiveDrainEnabled)
+        {
+            return true;
+        }
+
+        int everyNth = Math.Max(1, RelayTrimEveryNthTickAggressive);
+        relayTrimCadenceCounter = (relayTrimCadenceCounter + 1) % everyNth;
+        bool run = relayTrimCadenceCounter == 0;
+        if (!run)
+        {
+            ArchimedesPerf.AddCount("controller.relayTrim.deferredCadence");
+        }
+
+        return run;
     }
 
     private ArchimedesScrewControllerSchedule ResolveNextSchedule(
@@ -919,6 +1028,31 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         }
 
         return supporting;
+    }
+
+    private HashSet<long> BuildSupportedKeySetForDrain(HashSet<long> connectedKeys)
+    {
+        if (waterConfig == null ||
+            !AggressiveDrainEnabled ||
+            connectedKeys.Count <= Math.Max(1, LargeComponentSamplingThresholdAggressive))
+        {
+            return connectedKeys;
+        }
+
+        int stride = Math.Max(1, DrainConnectivitySampleStrideAggressive);
+        HashSet<long> sampled = new();
+        int index = 0;
+        foreach (long key in connectedKeys)
+        {
+            if ((index++ % stride) == 0)
+            {
+                sampled.Add(key);
+            }
+        }
+
+        ArchimedesPerf.AddCount("controller.supportedSet.sampled");
+        ArchimedesPerf.AddCount("controller.supportedSet.sampledSize", sampled.Count);
+        return sampled;
     }
 
     private List<BlockPos> BuildDrainProbeOriginPositions(BlockPos primarySeed)
@@ -1116,6 +1250,14 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return 0;
         }
 
+        if (AggressiveDrainEnabled &&
+            distanceByKey.Count > Math.Max(1, RelaySamplingCandidateLimitAggressive))
+        {
+            distanceByKey = BuildSampledDistanceMap(distanceByKey, Math.Max(1, RelaySamplingCandidateLimitAggressive));
+            ArchimedesPerf.AddCount("controller.relaySelect.sampledDistanceMap");
+            ArchimedesPerf.AddCount("controller.relaySelect.sampledDistanceMap.size", distanceByKey.Count);
+        }
+
         int budget = Math.Max(1, perTickBudget);
         int maxCreateAllowed = Math.Min(budget, relayCap - relayOwnedPositions.Count);
         if (maxCreateAllowed <= 0)
@@ -1125,9 +1267,17 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         bool useRandomBucket = IsRandomWithinDistanceBucketMode();
         int shortlistCapacity = ComputeRelayShortlistCapacity(maxCreateAllowed);
-        IEnumerable<RelayCandidateEntry> orderedCandidates = useRandomBucket
-            ? EnumerateRelayCandidatesRandomBucket(distanceByKey, connectedWater, BuildRelayOrderingSeed())
-            : SelectTopKRelayCandidatesDeterministic(distanceByKey, connectedWater, maxCreateAllowed, shortlistCapacity);
+        IEnumerable<RelayCandidateEntry> orderedCandidates;
+        if (useRandomBucket)
+        {
+            using ArchimedesPerf.PerfScope _selectionPerf = ArchimedesPerf.Measure("controller.relaySelectRandomBucket");
+            orderedCandidates = EnumerateRelayCandidatesRandomBucket(distanceByKey, connectedWater, BuildRelayOrderingSeed());
+        }
+        else
+        {
+            using ArchimedesPerf.PerfScope _selectionPerf = ArchimedesPerf.Measure("controller.relaySelectTopK");
+            orderedCandidates = SelectTopKRelayCandidatesDeterministic(distanceByKey, connectedWater, maxCreateAllowed, shortlistCapacity);
+        }
 
         int candidatesExamined = 0;
         int rejectedCooldown = 0;
@@ -1218,6 +1368,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int maxCreateAllowed,
         int shortlistCapacity)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("controller.relaySelectTopKInternal");
         _ = maxCreateAllowed; // Kept in signature to mirror the random-bucket path; sizing is driven by shortlistCapacity.
         relayTopKScratch.Clear();
         relayCandidateOrderedScratch.Clear();
@@ -1226,14 +1377,26 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return relayCandidateOrderedScratch;
         }
 
+        int considered = 0;
+        int shortlisted = 0;
+        int hardConsiderLimit = waterConfig != null && AggressiveDrainEnabled
+            ? Math.Max(shortlistCapacity, Math.Max(1, RelaySamplingCandidateLimitAggressive))
+            : int.MaxValue;
         IBlockAccessor accessor = Api.World.BlockAccessor;
         foreach ((long key, int distance) in distanceByKey)
         {
+            if (considered >= hardConsiderLimit)
+            {
+                ArchimedesPerf.AddCount("controller.relaySelectTopK.considerLimitHit");
+                break;
+            }
+
             if (distance <= 0)
             {
                 continue;
             }
 
+            considered++;
             if (!connectedWater.TryGetValue(key, out BlockPos? pos))
             {
                 continue;
@@ -1274,6 +1437,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             if (relayTopKScratch.Count < shortlistCapacity)
             {
                 relayTopKScratch.Enqueue(key, rank);
+                shortlisted++;
                 continue;
             }
 
@@ -1283,6 +1447,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                 rank.CompareTo(worst) < 0)
             {
                 relayTopKScratch.EnqueueDequeue(key, rank);
+                shortlisted++;
             }
         }
 
@@ -1298,6 +1463,9 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         // Heap dequeue order is reverse (worst-first) under our comparer; sort to natural order.
         relayCandidateOrderedScratch.Sort(static (a, b) => a.Rank.CompareTo(b.Rank));
+        ArchimedesPerf.AddCount("controller.relaySelectTopK.considered", considered);
+        ArchimedesPerf.AddCount("controller.relaySelectTopK.shortlistOps", shortlisted);
+        ArchimedesPerf.AddCount("controller.relaySelectTopK.output", relayCandidateOrderedScratch.Count);
         return relayCandidateOrderedScratch;
     }
 
@@ -1311,15 +1479,22 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         Dictionary<long, BlockPos> connectedWater,
         int randomSeed)
     {
+        using ArchimedesPerf.PerfScope _perf = ArchimedesPerf.Measure("controller.relayEnumerateRandomBucket");
         Random random = new(randomSeed);
+        int hardYieldLimit = waterConfig != null && AggressiveDrainEnabled
+            ? Math.Max(1, RelaySamplingCandidateLimitAggressive)
+            : int.MaxValue;
         // Group by distance ascending; each bucket is shuffled lazily on demand. GroupBy still
         // performs a single eager pass over the source, but per-bucket shuffling now happens only
         // for the buckets the consumer actually walks.
+        int bucketsEnumerated = 0;
+        int yielded = 0;
         foreach (IGrouping<int, KeyValuePair<long, int>> bucket in distanceByKey
                      .Where(p => p.Value > 0)
                      .GroupBy(p => p.Value)
                      .OrderBy(g => g.Key))
         {
+            bucketsEnumerated++;
             List<KeyValuePair<long, int>> shuffled = bucket.ToList();
             for (int i = shuffled.Count - 1; i > 0; i--)
             {
@@ -1340,9 +1515,59 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                     continue;
                 }
 
+                yielded++;
                 yield return new RelayCandidateEntry(key, pos, new RelayCandidateRank(pair.Value, -pos.Y, key));
+                if (yielded >= hardYieldLimit)
+                {
+                    ArchimedesPerf.AddCount("controller.relayEnumerateRandomBucket.yieldLimitHit");
+                    yield break;
+                }
             }
         }
+
+        ArchimedesPerf.AddCount("controller.relayEnumerateRandomBucket.buckets", bucketsEnumerated);
+        ArchimedesPerf.AddCount("controller.relayEnumerateRandomBucket.yielded", yielded);
+    }
+
+    private Dictionary<long, int> BuildSampledDistanceMap(Dictionary<long, int> source, int limit)
+    {
+        Dictionary<long, int> sampled = new(Math.Min(source.Count, limit));
+        if (source.Count <= limit)
+        {
+            foreach ((long key, int distance) in source)
+            {
+                sampled[key] = distance;
+            }
+
+            return sampled;
+        }
+
+        int stride = Math.Max(1, source.Count / limit);
+        int index = 0;
+        foreach ((long key, int distance) in source)
+        {
+            if (index % stride == 0)
+            {
+                sampled[key] = distance;
+                if (sampled.Count >= limit)
+                {
+                    break;
+                }
+            }
+
+            index++;
+        }
+
+        if (sampled.Count == 0)
+        {
+            foreach ((long key, int distance) in source)
+            {
+                sampled[key] = distance;
+                break;
+            }
+        }
+
+        return sampled;
     }
 
     private int TrimRelaySourcesToCap(BlockPos seedPos, int relayCap, int perTickBudget)
@@ -1680,8 +1905,23 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         ReconcileRelayOwnedPositionsFromManager();
 
         List<BlockPos> toRelease = new();
+        int scanStride = (AggressiveDrainEnabled && ownedPositions.Count > Math.Max(1, LargeComponentSamplingThresholdAggressive))
+            ? Math.Max(1, DrainConnectivitySampleStrideAggressive)
+            : 1;
+        if (scanStride > 1)
+        {
+            ArchimedesPerf.AddCount("controller.drainUnsupported.sampleStrideActive");
+            ArchimedesPerf.AddCount("controller.drainUnsupported.sampleStride", scanStride);
+        }
+
+        int scanIndex = 0;
         foreach (BlockPos pos in ownedPositions.Values)
         {
+            if (scanStride > 1 && (scanIndex++ % scanStride) != 0)
+            {
+                continue;
+            }
+
             long key = ArchimedesPosKey.Pack(pos);
             if (!supportedKeySet.Contains(key))
             {
