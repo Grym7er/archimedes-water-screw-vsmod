@@ -6,7 +6,7 @@
     "Grym7er"
   ],
   "description": "Adds a mechanically powered Archimedes screw that can pump water against gravity.",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "dependencies": {
     "game": "1.22.0"
   }
