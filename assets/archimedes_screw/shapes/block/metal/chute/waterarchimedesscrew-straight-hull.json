@@ -7,7 +7,7 @@
 	"textureHeight": 16,
 	"textureSizes": {},
 	"textures": {
-		"copper3": "game:block/metal/sheet/copper3"
+		"copper3": "game:block/metal/sheet/lead3"
 	},
 	"elements": [
 		{

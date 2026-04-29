@@ -7,15 +7,15 @@
       "name": "MPArchimedesScrew",
       "properties": {
         "staticShapePartByType": {
-          "*-ported-north": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateY": 270 },
-          "*-ported-east": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateY": 180 },
-          "*-ported-south": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateY": 90 },
-          "*-ported-west": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateY": 0 },
-          "*-end-outlet-north": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateX": 180, "rotateY": 90 },
-          "*-end-outlet-east": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateX": 180, "rotateY": 180 },
-          "*-end-outlet-south": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateX": 180, "rotateY": 270 },
-          "*-end-outlet-west": { "base": "block/metal/chute/archimedesscrew-ported-hull", "rotateX": 180, "rotateY": 0 },
-          "*": { "base": "block/metal/chute/archimedesscrew-{type}-hull" }
+          "*-ported-north": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateY": 270 },
+          "*-ported-east": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateY": 180 },
+          "*-ported-south": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateY": 90 },
+          "*-ported-west": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateY": 0 },
+          "*-end-outlet-north": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateX": 180, "rotateY": 90 },
+          "*-end-outlet-east": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateX": 180, "rotateY": 180 },
+          "*-end-outlet-south": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateX": 180, "rotateY": 270 },
+          "*-end-outlet-west": { "base": "block/metal/chute/waterarchimedesscrew-ported-hull", "rotateX": 180, "rotateY": 0 },
+          "*": { "base": "block/metal/chute/waterarchimedesscrew-{type}-hull" }
         }
       }
     }
@@ -46,35 +46,35 @@
   },
   "shapeinventorybyType": {
     "*-straight": {
-      "base": "block/metal/chute/archimedesscrew-{type}-hull",
+      "base": "block/metal/chute/waterarchimedesscrew-{type}-hull",
       "overlays": [
-        { "base": "block/metal/chute/archimedesscrew-{type}-shaft" }
+        { "base": "block/metal/chute/waterarchimedesscrew-{type}-shaft" }
       ]
     },
     "*-ported-*": {
-      "base": "block/metal/chute/archimedesscrew-ported-hull",
+      "base": "block/metal/chute/waterarchimedesscrew-ported-hull",
       "overlays": [
-        { "base": "block/metal/chute/archimedesscrew-ported-shaft" }
+        { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft" }
       ]
     },
     "*-end-outlet-*": {
-      "base": "block/metal/chute/archimedesscrew-ported-hull",
+      "base": "block/metal/chute/waterarchimedesscrew-ported-hull",
       "rotateX": 180,
       "overlays": [
-        { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateX": 180 }
+        { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateX": 180 }
       ]
     }
   },
   "shapebytype": {
-    "*-straight": { "base": "block/metal/chute/archimedesscrew-{type}-shaft" },
-    "*-ported-north": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateY": 270 },
-    "*-ported-east": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateY": 180 },
-    "*-ported-south": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateY": 90 },
-    "*-ported-west": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateY": 0 },
-    "*-end-outlet-north": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 90 },
-    "*-end-outlet-east": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 180 },
-    "*-end-outlet-south": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 270 },
-    "*-end-outlet-west": { "base": "block/metal/chute/archimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 0 }
+    "*-straight": { "base": "block/metal/chute/waterarchimedesscrew-{type}-shaft" },
+    "*-ported-north": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateY": 270 },
+    "*-ported-east": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateY": 180 },
+    "*-ported-south": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateY": 90 },
+    "*-ported-west": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateY": 0 },
+    "*-end-outlet-north": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 90 },
+    "*-end-outlet-east": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 180 },
+    "*-end-outlet-south": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 270 },
+    "*-end-outlet-west": { "base": "block/metal/chute/waterarchimedesscrew-ported-shaft", "rotateX": 180, "rotateY": 0 }
   },
   "textures": {
     "all": { "base": "game:block/metal/sheet/lead1" }
