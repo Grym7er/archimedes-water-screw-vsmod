@@ -199,6 +199,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     public override void OnBlockRemoved()
     {
         Log("Block removed at {0}: {1}", Pos, Block?.Code);
+        UnregisterRealisticWaterCompatOutlet(lastSeedPos);
         waterManager?.UnregisterFromCentralWaterTick(ControllerId);
         ReleaseAllManagedWater("block removed");
         waterManager?.UnregisterScrewBlock(Pos);
@@ -209,6 +210,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     public override void OnBlockUnloaded()
     {
         Log("Block unloaded at {0}", Pos);
+        UnregisterRealisticWaterCompatOutlet(lastSeedPos);
         waterManager?.UnregisterFromCentralWaterTick(ControllerId);
         waterManager?.UnregisterLoadedController(ControllerId);
         base.OnBlockUnloaded();
@@ -669,6 +671,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         if (!evaluation.IsController)
         {
             wasController = false;
+            UnregisterRealisticWaterCompatOutlet(lastSeedPos);
+            UnregisterRealisticWaterCompatOutlet(evaluation.SeedPos);
             HandleInvalidControllerState(evaluation, fastMs, idleMs, forceDrainWhenInvalid: true);
             return;
         }
@@ -677,6 +681,8 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         if (!evaluation.IsPowered || evaluation.FamilyId == null || evaluation.SeedPos == null)
         {
+            UnregisterRealisticWaterCompatOutlet(lastSeedPos);
+            UnregisterRealisticWaterCompatOutlet(evaluation.SeedPos);
             // Unpowered draining releases owned managed sources each tick. Keep seizure active for vanilla
             // sources (e.g. player bucket placements) while avoiding outlet refill during drain.
             // Do NOT call EnsureSeedSource here: it refills the outlet via SetManagedSource and blocks drain.
@@ -700,6 +706,10 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
         BlockPos seedPos = evaluation.SeedPos.Copy();
         string familyId = evaluation.FamilyId;
+        if (lastSeedPos != null && !lastSeedPos.Equals(seedPos))
+        {
+            UnregisterRealisticWaterCompatOutlet(lastSeedPos);
+        }
         string seedKey = ArchimedesPosKey.ToDebugString(ArchimedesPosKey.Pack(seedPos));
         if (lastLoggedSeedKey != seedKey)
         {
@@ -893,6 +903,22 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
                lowCadenceScanSkipsRemaining > 0;
     }
 
+    private bool IsRealisticWaterCompatActive()
+    {
+        ArchimedesScrewModSystem? modSystem = Api?.ModLoader.GetModSystem<ArchimedesScrewModSystem>();
+        return modSystem?.IsRealisticWaterCompatActive == true;
+    }
+
+    private bool AreRelaySourcesEffectivelyEnabled()
+    {
+        if (waterConfig?.EnableRelaySources != true)
+        {
+            return false;
+        }
+
+        return !IsRealisticWaterCompatActive();
+    }
+
     private (int RelayCreated, int RelayTrimmed) RunRelayMaintenance(
         BlockPos seedPos,
         string familyId,
@@ -906,7 +932,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         int relayCreated = 0;
         int relayTrimmed = 0;
         bool relayDue = IsRelayCreationDue();
-        if (waterConfig!.EnableRelaySources && !isTruncated)
+        if (AreRelaySourcesEffectivelyEnabled() && !isTruncated)
         {
             if (relayDue)
             {
@@ -960,8 +986,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     )
     {
         bool relayExpansionPending =
-            waterConfig != null &&
-            waterConfig.EnableRelaySources &&
+            AreRelaySourcesEffectivelyEnabled() &&
             relayOwnedPositions.Count < relayCap;
         bool busyWork =
             ensuredSeed ||
@@ -970,7 +995,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             relayCreated > 0 ||
             relayTrimmed > 0 ||
             relayExpansionPending ||
-            ownedPositions.Count == 0;
+            (!IsRealisticWaterCompatActive() && ownedPositions.Count == 0);
         return busyWork
             ? ArchimedesScrewControllerSchedule.HighCadence
             : ArchimedesScrewControllerSchedule.LowCadence;
@@ -1092,6 +1117,11 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
             return false;
         }
 
+        if (TryPlaceRealisticWaterCompatOutlet(seedPos, familyId, out bool compatChanged))
+        {
+            return compatChanged;
+        }
+
         BlockPos? sourcePos = null;
         BlockFacing? sourceFacing = null;
         BlockPos topPos = FindTopScrewPos();
@@ -1118,12 +1148,146 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
         return changed;
     }
 
+    private bool TryPlaceRealisticWaterCompatOutlet(BlockPos seedPos, string familyId, out bool changed)
+    {
+        changed = false;
+        if (Api == null || waterManager == null)
+        {
+            return false;
+        }
+
+        ArchimedesScrewModSystem modSystem = Api.ModLoader.GetModSystem<ArchimedesScrewModSystem>();
+        if (!modSystem.TryResolveRealisticWaterOutletBlock(familyId, out Block outletBlock))
+        {
+            return false;
+        }
+
+        Block solidBlock = Api.World.BlockAccessor.GetBlock(seedPos);
+        bool solidClear = solidBlock.Id == 0 || solidBlock.ForFluidsLayer;
+        if (!solidClear)
+        {
+            BlockPos topPos = FindTopScrewPos();
+            BlockFacing? sourceFacing =
+                Api.World.BlockAccessor.GetBlock(topPos) is BlockWaterArchimedesScrew topScrew &&
+                topScrew.IsOutletBlock()
+                    ? topScrew.GetPortFacing()
+                    : null;
+            bool directionalHostCompatible = sourceFacing != null &&
+                                             ArchimedesFluidHostValidator.IsFluidHostCellCompatible(
+                                                 Api.World,
+                                                 seedPos,
+                                                 topPos,
+                                                 sourceFacing);
+            if (!directionalHostCompatible)
+            {
+                UnregisterRealisticWaterCompatOutlet(seedPos);
+                return true;
+            }
+        }
+
+        Block currentFluid = Api.World.BlockAccessor.GetBlock(seedPos, BlockLayersAccess.Fluid);
+        if (!CanReplaceFluidWithRealisticWaterCompatOutput(currentFluid, outletBlock, familyId))
+        {
+            UnregisterRealisticWaterCompatOutlet(seedPos);
+            return true;
+        }
+
+        if (currentFluid.Id != outletBlock.Id &&
+            !modSystem.IsCompatibleRealisticWaterOutletBlock(currentFluid, familyId))
+        {
+            Api.World.BlockAccessor.SetBlock(outletBlock.Id, seedPos, BlockLayersAccess.Fluid);
+            TriggerRealisticWaterCompatOutletUpdates(seedPos, outletBlock);
+            changed = true;
+        }
+
+        long key = ArchimedesPosKey.Pack(seedPos);
+        bool removedLocalOwned = ownedPositions.Remove(key);
+        bool removedLocalRelay = relayOwnedPositions.Remove(key);
+        relayPromotedAtMsByKey.Remove(key);
+        if (waterManager.IsOwnedByController(ControllerId, seedPos))
+        {
+            waterManager.ReleaseOwnedSourceForController(ControllerId, seedPos);
+            changed = true;
+        }
+
+        if (removedLocalOwned || removedLocalRelay)
+        {
+            UpdateSnapshot();
+            MarkDirty();
+            changed = true;
+        }
+
+        modSystem.RefreshRealisticWaterSustainedOutlet(seedPos, familyId, outletBlock);
+
+        return true;
+    }
+
+    private void UnregisterRealisticWaterCompatOutlet(BlockPos? pos)
+    {
+        if (Api == null || pos == null)
+        {
+            return;
+        }
+
+        ArchimedesScrewModSystem modSystem = Api.ModLoader.GetModSystem<ArchimedesScrewModSystem>();
+        modSystem.UnregisterRealisticWaterSustainedOutlet(pos);
+    }
+
+    private bool CanReplaceFluidWithRealisticWaterCompatOutput(Block currentFluid, Block outletBlock, string familyId)
+    {
+        if (currentFluid.Id == 0 || currentFluid.Id == outletBlock.Id || waterManager?.IsArchimedesWaterBlock(currentFluid) == true)
+        {
+            return true;
+        }
+
+        if (waterManager != null &&
+            waterManager.TryResolveVanillaWaterFamily(currentFluid, out string currentFamilyId) &&
+            string.Equals(currentFamilyId, familyId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return string.Equals(familyId, ArchimedesWaterFamilies.Fresh.Id, StringComparison.Ordinal) &&
+               currentFluid.Code?.Path.StartsWith("realisticwater-", StringComparison.Ordinal) == true;
+    }
+
+    private void TriggerRealisticWaterCompatOutletUpdates(BlockPos pos, Block placedFluid)
+    {
+        if (Api == null)
+        {
+            return;
+        }
+
+        IBlockAccessor accessor = Api.World.BlockAccessor;
+        accessor.TriggerNeighbourBlockUpdate(pos);
+        accessor.MarkBlockDirty(pos);
+        placedFluid.OnNeighbourBlockChange(Api.World, pos, pos);
+
+        BlockPos neighbourPos = new(0);
+        foreach (BlockFacing face in BlockFacing.ALLFACES)
+        {
+            neighbourPos.Set(pos.X + face.Normali.X, pos.Y + face.Normali.Y, pos.Z + face.Normali.Z);
+
+            Block neighbourSolid = accessor.GetBlock(neighbourPos);
+            if (neighbourSolid.Id != 0)
+            {
+                neighbourSolid.OnNeighbourBlockChange(Api.World, neighbourPos, pos);
+            }
+
+            Block neighbourFluid = accessor.GetBlock(neighbourPos, BlockLayersAccess.Fluid);
+            if (neighbourFluid.Id != 0)
+            {
+                neighbourFluid.OnNeighbourBlockChange(Api.World, neighbourPos, pos);
+            }
+        }
+    }
+
     /// <summary>
     /// Hysteresis-free cap from mechanical power (matches the target inside <see cref="ComputeEffectiveRelayCap"/>).
     /// </summary>
     private int ComputeInstantaneousRelayCapForPower(float currentPower)
     {
-        if (waterConfig == null || !waterConfig.EnableRelaySources)
+        if (waterConfig == null || !AreRelaySourcesEffectivelyEnabled())
         {
             return 0;
         }
@@ -1152,7 +1316,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
     /// </summary>
     private void ApplyRelayCapStateAfterLoadOrPlacement()
     {
-        if (waterConfig == null || !waterConfig.EnableRelaySources)
+        if (waterConfig == null || !AreRelaySourcesEffectivelyEnabled())
         {
             lastEffectiveRelayCap = 0;
             deserializedLastEffectiveRelayCap = -1;
@@ -1190,7 +1354,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     private int ComputeEffectiveRelayCap(float currentPower)
     {
-        if (waterConfig == null || !waterConfig.EnableRelaySources)
+        if (waterConfig == null || !AreRelaySourcesEffectivelyEnabled())
         {
             lastEffectiveRelayCap = 0;
             return 0;

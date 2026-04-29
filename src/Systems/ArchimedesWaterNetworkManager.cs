@@ -1082,7 +1082,7 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         return false;
     }
 
-    /// <summary>Vanilla or mod-managed Archimedes liquid at an intake cell (any flow/height).</summary>
+    /// <summary>Vanilla, mod-managed Archimedes, or compatible mod liquid at an intake cell (any flow/height).</summary>
     public bool TryResolveIntakeWaterFamily(Block block, out string familyId)
     {
         if (TryResolveVanillaWaterFamily(block, out familyId))
@@ -1091,6 +1091,12 @@ public sealed partial class ArchimedesWaterNetworkManager : IDisposable
         }
 
         if (TryResolveManagedWaterFamily(block, out familyId))
+        {
+            return true;
+        }
+
+        if (api.ModLoader.GetModSystem<ArchimedesScrewModSystem>()
+            .TryResolveRealisticWaterIntakeFamily(block, out familyId))
         {
             return true;
         }

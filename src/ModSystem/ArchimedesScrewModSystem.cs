@@ -36,6 +36,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     private EventBusListenerDelegate? configLibSettingChangedHandler;
     private ArchimedesScrewConfig.WaterConfig? pendingWaterConfig;
     private bool pendingRequiresCentralTickRestart;
+    private RealisticWaterCompatBridge? realisticWaterCompatBridge;
     private WaterfallCompatBridge? waterfallCompatBridge;
     private WaterSourceRegenCompatBridge? waterSourceRegenCompatBridge;
     private ArchimedesWaterDebugOverlay? waterDebugOverlay;
@@ -49,6 +50,35 @@ public sealed class ArchimedesScrewModSystem : ModSystem
     public ArchimedesScrewConfig Config { get; private set; } = new();
 
     public ArchimedesWaterNetworkManager? WaterManager { get; private set; }
+
+    public bool IsRealisticWaterCompatActive => realisticWaterCompatBridge?.IsActive ?? false;
+
+    public bool TryResolveRealisticWaterOutletBlock(string familyId, out Block outletBlock)
+    {
+        outletBlock = null!;
+        return realisticWaterCompatBridge?.TryResolveOutletBlock(familyId, out outletBlock) == true;
+    }
+
+    public bool IsCompatibleRealisticWaterOutletBlock(Block block, string familyId)
+    {
+        return realisticWaterCompatBridge?.IsCompatibleOutletBlock(block, familyId) == true;
+    }
+
+    public bool TryResolveRealisticWaterIntakeFamily(Block block, out string familyId)
+    {
+        familyId = string.Empty;
+        return realisticWaterCompatBridge?.TryResolveIntakeFamily(block, out familyId) == true;
+    }
+
+    public void RefreshRealisticWaterSustainedOutlet(BlockPos pos, string familyId, Block outletBlock)
+    {
+        realisticWaterCompatBridge?.RefreshSustainedOutlet(pos, familyId, outletBlock);
+    }
+
+    public void UnregisterRealisticWaterSustainedOutlet(BlockPos? pos)
+    {
+        realisticWaterCompatBridge?.UnregisterSustainedOutlet(pos);
+    }
 
     /// <summary>Client: whether the last water debug snapshot had <c>Enabled=true</c>.</summary>
     public bool IsWaterDebugOverlayEnabled => waterDebugOverlay?.IsOverlayEnabled ?? false;
@@ -172,6 +202,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             .RegisterMessageType<WaterDebugTooltipResponsePacket>();
         serverChannel.SetMessageHandler<WaterDebugTooltipQueryPacket>(OnWaterDebugTooltipQuery);
 
+        realisticWaterCompatBridge = new RealisticWaterCompatBridge(api);
         WaterManager = new ArchimedesWaterNetworkManager(api, Config);
         WaterManager.StartCentralWaterTick();
         waterSourceRegenCompatBridge = new WaterSourceRegenCompatBridge(api);
@@ -221,6 +252,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
 
         WaterManager?.Dispose();
         ArchimedesPosKey.ResetForWorldUnload();
+        realisticWaterCompatBridge?.Dispose();
         waterSourceRegenCompatBridge?.Dispose();
         waterfallCompatBridge?.Dispose();
         if (sapi != null && waterDebugTickListenerId != 0)
@@ -228,6 +260,7 @@ public sealed class ArchimedesScrewModSystem : ModSystem
             sapi.Event.UnregisterGameTickListener(waterDebugTickListenerId);
             waterDebugTickListenerId = 0;
         }
+        realisticWaterCompatBridge = null;
         waterSourceRegenCompatBridge = null;
         waterfallCompatBridge = null;
         WaterManager = null;

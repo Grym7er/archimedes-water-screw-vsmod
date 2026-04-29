@@ -267,7 +267,9 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
     public bool HasValidWaterIntake(IWorldAccessor world, BlockPos pos)
     {
         Block currentFluid = world.BlockAccessor.GetBlock(pos, BlockLayersAccess.Fluid);
-        return IsValidIntakeFluidBlock(currentFluid);
+        return IsValidIntakeFluidBlock(currentFluid) ||
+               world.Api.ModLoader.GetModSystem<ArchimedesScrewModSystem>()
+                   .TryResolveRealisticWaterIntakeFamily(currentFluid, out _);
     }
 
     /// <summary>Vanilla or mod-managed liquid suitable for an intake (family matches screw output).</summary>

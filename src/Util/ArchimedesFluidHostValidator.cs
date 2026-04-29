@@ -33,7 +33,8 @@ internal static class ArchimedesFluidHostValidator
 
         bool fluidClear = targetFluid.Id == 0 ||
                           ArchimedesWaterFamilies.IsManagedWater(targetFluid) ||
-                          IsVanillaWaterBlock(targetFluid);
+                          IsVanillaWaterBlock(targetFluid) ||
+                          IsRealisticWaterCompatBlock(targetFluid);
         bool hostableCell = IsHostableCellByGeometry(targetSolid, targetPos);
         bool hasDirectionalContext = sourcePos != null && sourceFacing != null;
         if (!fluidClear || !hostableCell)
@@ -60,7 +61,10 @@ internal static class ArchimedesFluidHostValidator
     // if any face permits liquid transfer, the cell can host managed water.
     private static bool IsHostableCellByGeometry(Block solidBlock, BlockPos pos)
     {
-        if (solidBlock.Id == 0 || solidBlock.ForFluidsLayer || ArchimedesWaterFamilies.IsManagedWater(solidBlock))
+        if (solidBlock.Id == 0 ||
+            solidBlock.ForFluidsLayer ||
+            ArchimedesWaterFamilies.IsManagedWater(solidBlock) ||
+            IsRealisticWaterCompatBlock(solidBlock))
         {
             return true;
         }
@@ -79,6 +83,16 @@ internal static class ArchimedesFluidHostValidator
     private static bool IsVanillaWaterBlock(Block block)
     {
         return block.IsLiquid() && ArchimedesWaterFamilies.TryResolveVanillaFamily(block, out _);
+    }
+
+    private static bool IsRealisticWaterCompatBlock(Block block)
+    {
+        if (!block.IsLiquid() || block.LiquidLevel >= 7)
+        {
+            return false;
+        }
+
+        return block.Code?.Path.StartsWith("realisticwater-", System.StringComparison.Ordinal) == true;
     }
 
     private static bool TryGetCardinalFacing(BlockPos fromPos, BlockPos toPos, out BlockFacing facing)
