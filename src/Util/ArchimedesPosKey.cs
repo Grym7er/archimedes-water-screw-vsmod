@@ -1,4 +1,5 @@
 using System;
+using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 
 namespace ArchimedesScrew;
@@ -86,6 +87,22 @@ public static class ArchimedesPosKey
         zMask = 0;
         yMask = 0;
         xMask = 0;
+    }
+
+    /// <summary>
+    /// Ensures layout is initialized for the given world's map bounds. Use from
+    /// <c>BlockEntity.FromTreeAttributes</c> before <c>Api</c> is set (client or server).
+    /// Delegates to <see cref="InitializeForWorld"/>; idempotent when dimensions match an existing init.
+    /// </summary>
+    public static void EnsureInitializedFromWorld(IWorldAccessor world)
+    {
+        if (world == null)
+        {
+            throw new ArgumentNullException(nameof(world));
+        }
+
+        IBlockAccessor ba = world.BlockAccessor;
+        InitializeForWorld(ba.MapSizeX, ba.MapSizeY, ba.MapSizeZ);
     }
 
     public static long Pack(BlockPos pos)

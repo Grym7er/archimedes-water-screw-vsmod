@@ -599,6 +599,7 @@ public sealed class BlockEntityWaterArchimedesScrew : BlockEntity
 
     public override void FromTreeAttributes(ITreeAttribute tree, IWorldAccessor worldAccessForResolve)
     {
+        ArchimedesPosKey.EnsureInitializedFromWorld(worldAccessForResolve);
         base.FromTreeAttributes(tree, worldAccessForResolve);
 
         ClearLegacyFootprint();
