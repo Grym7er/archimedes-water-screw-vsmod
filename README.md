@@ -13,20 +13,32 @@ Mechanically powered water lifting for Vintage Story.
 
 ## Build
 
-Requirements:
+The project multi-targets two frameworks, each matched to a Vintage Story release:
 
-- .NET 10 SDK
-- Vintage Story 1.22+
+| Target framework | Vintage Story | Default game path |
+| --- | --- | --- |
+| `net10.0` | 1.22+ | `~/Games/vintagestory` |
+| `net8.0` | 1.21 | `~/.local/share/vintagestory` |
 
-Build:
+Each target references the game assemblies from its own install, so building one
+framework requires the matching game version to be present at its path. Pick the
+framework for the Vintage Story version you are targeting:
 
 ```bash
-dotnet build
+dotnet build -f net10.0   # Vintage Story 1.22+
+dotnet build -f net8.0    # Vintage Story 1.21
 ```
 
-If your game path is not auto-detected, set `VINTAGE_STORY` before building.
+If your game is installed elsewhere, set `VINTAGE_STORY` before building; it
+overrides the per-framework default path:
 
-Build output is under `bin/Debug/Mods/mod/`.
+```bash
+export VINTAGE_STORY="/path/to/Vintage Story"
+```
+
+The .NET SDK is pinned via `global.json`. Build output is under `bin/Debug/Mods/mod/`.
+The helper scripts `build_net8.sh` and `build_net10.sh` build and deploy a zip to
+your mods folder (override the destination with `VINTAGE_STORY_MODS_DIR`).
 
 ## Install
 

@@ -16,10 +16,17 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
         return facing.Axis == EnumAxis.Y;
     }
 
+#if NET8_0
+    public override bool HasMechPowerConnectorAt(IWorldAccessor world, BlockPos pos, BlockFacing face)
+    {
+        return IsOrientedTo(face);
+    }
+#else
     public override bool HasMechPowerConnectorAt(IWorldAccessor world, BlockPos pos, BlockFacing face, BlockMPBase forBlock)
     {
         return IsOrientedTo(face);
     }
+#endif
 
     public override bool TryPlaceBlock(IWorldAccessor world, IPlayer byPlayer, ItemStack itemstack, BlockSelection blockSel, ref string failureCode)
     {
@@ -45,7 +52,11 @@ public sealed class BlockWaterArchimedesScrew : BlockMPBase
         {
             BlockPos pos = blockSel.Position.AddCopy(face);
             IMechanicalPowerBlock? block = world.BlockAccessor.GetBlock(pos) as IMechanicalPowerBlock;
+#if NET8_0
+            if (block == null || !block.HasMechPowerConnectorAt(world, pos, face.Opposite))
+#else
             if (block == null || !block.HasMechPowerConnectorAt(world, pos, face.Opposite, blockToPlace))
+#endif
             {
                 continue;
             }

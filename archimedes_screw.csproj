@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <OutputPath>bin\$(Configuration)\Mods\mod\</OutputPath>
     <VintageStoryPath Condition="'$(VINTAGE_STORY)' != ''">$(VINTAGE_STORY)</VintageStoryPath>
-    <VintageStoryPath Condition="'$(VintageStoryPath)' == ''">$(HOME)/Games/vintagestory</VintageStoryPath>
+    <VintageStoryPath Condition="'$(VintageStoryPath)' == '' and '$(OS)' != 'Windows_NT' and '$(TargetFramework)' == 'net8.0'">$(HOME)/.local/share/vintagestory</VintageStoryPath>
+    <VintageStoryPath Condition="'$(VintageStoryPath)' == '' and '$(OS)' != 'Windows_NT' and '$(TargetFramework)' == 'net10.0'">$(HOME)/Games/vintagestory</VintageStoryPath>
+    <VintageStoryPath Condition="'$(VintageStoryPath)' == '' and '$(OS)' == 'Windows_NT'">C:\Program Files\Vintage Story</VintageStoryPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -40,4 +42,14 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <Target Name="ValidateVintageStoryReferences" BeforeTargets="ResolveReferences">
+    <Error Text="Vintage Story path was not resolved. Set VINTAGE_STORY to your game install directory, or fix net8/net10 default paths in archimedes_screw.csproj." Condition="'$(VintageStoryPath)' == ''" />
+    <Error Text="Missing required Vintage Story assembly: $(VintageStoryPath)/VintagestoryAPI.dll. Set VINTAGE_STORY correctly." Condition="!Exists('$(VintageStoryPath)/VintagestoryAPI.dll')" />
+    <Error Text="Missing required Vintage Story assembly: $(VintageStoryPath)/Mods/VSSurvivalMod.dll. Set VINTAGE_STORY correctly." Condition="!Exists('$(VintageStoryPath)/Mods/VSSurvivalMod.dll')" />
+    <Error Text="Missing required Vintage Story assembly: $(VintageStoryPath)/Mods/VSEssentials.dll. Set VINTAGE_STORY correctly." Condition="!Exists('$(VintageStoryPath)/Mods/VSEssentials.dll')" />
+    <Error Text="Missing required Vintage Story assembly: $(VintageStoryPath)/Mods/VSCreativeMod.dll. Set VINTAGE_STORY correctly." Condition="!Exists('$(VintageStoryPath)/Mods/VSCreativeMod.dll')" />
+    <Error Text="Missing required Vintage Story assembly: $(VintageStoryPath)/Lib/0Harmony.dll. Set VINTAGE_STORY correctly." Condition="!Exists('$(VintageStoryPath)/Lib/0Harmony.dll')" />
+  </Target>
+
 </Project>
